@@ -1,0 +1,51 @@
+# Dependencies
+node_modules
+
+# Production & Build outputs
+dist
+dist-electron
+dist-ssr
+release/
+*.local
+
+# System & Editor files
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Scratch & temporary
+scratch/
+*.tmp
+
+# ---- macOS 原生版（Swift Package）构建产物 ----
+mac/.build/
+mac/dist/
+*.app
+.swiftpm/
+.build/
+Package.resolved
+xcuserdata/
+DerivedData/
+
+# ---- Windows 原生版（.NET / WPF）构建产物 ----
+bin/
+obj/
+*.user
+*.suo
+publish/
+
+# ---- WorkBuddy 本地工作目录（会话记忆 / 技能，属本机状态，不入库）----
+.workbuddy/
+
+# ---- 本地工具环境临时目录 ----
+Library/
+windows/Library/

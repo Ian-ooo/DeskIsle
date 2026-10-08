@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows 端的单元测试工程
+    ────────────────────────────────────────────────────────────────
+    ⚠️ 这个工程刻意把 TargetFramework 定为 **net8.0**（而不是主工程的
+    net8.0-windows），原因只有一个：**它必须能在非 Windows 机器上跑起来**。
+    WPF targeted 的程序集即使在 macOS 上能靠 EnableWindowsTargeting 编译，
+    也照样无法 `dotnet test`（运行时找不到 Windows 基金会程序集）。
+
+    代价是：只能用「链接编译」（Compile Include + Link）把**真正不碰 WPF 的**
+    那几个源文件拉进来，不能整包引用主工程。挑文件时的判据：
+      · 依赖 ≤ System.Text.Json / System.IO / System.Linq ⇒ 可拉
+      · 用到 System.Windows.*（哪怕只是类型擦边）⇒ 不可拉
+    注意 `Models/PartitionModel.cs`、`Models/LayoutPreset.cs` 里虽然有
+    "System.Windows" 字样，但**只出现在 <see cref> 注释里**，不是真实依赖。
+
+    新增文件时务必保持这条边界，否则 macOS / Linux CI 会当场跑不起来。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>DeskIsle.Tests</RootNamespace>
+    <AssemblyName>DeskIsle.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 被测代码：与主工程**同一份源文件**，不复制，避免改了一处漏一处 -->
+    <Compile Include="..\..\DeskIsle\Services\LayoutEngine.cs" Link="Src\Services\LayoutEngine.cs" />
+    <Compile Include="..\..\DeskIsle\Services\PartitionMetrics.cs" Link="Src\Services\PartitionMetrics.cs" />
+    <Compile Include="..\..\DeskIsle\Services\FileKinds.cs" Link="Src\Services\FileKinds.cs" />
+    <Compile Include="..\..\DeskIsle\Services\QueryMatcher.cs" Link="Src\Services\QueryMatcher.cs" />
+    <Compile Include="..\..\DeskIsle\Services\PartitionTitle.cs" Link="Src\Services\PartitionTitle.cs" />
+    <Compile Include="..\..\DeskIsle\Services\DeskFont.cs" Link="Src\Services\DeskFont.cs" />
+    <Compile Include="..\..\DeskIsle\Models\PartitionModel.cs" Link="Src\Models\PartitionModel.cs" />
+    <Compile Include="..\..\DeskIsle\Models\PartitionStyle.cs" Link="Src\Models\PartitionStyle.cs" />
+    <Compile Include="..\..\DeskIsle\Services\PartitionLook.cs" Link="Src\Services\PartitionLook.cs" />
+    <Compile Include="..\..\DeskIsle\Services\FileMover.cs" Link="Src\Services\FileMover.cs" />
+    <Compile Include="..\..\DeskIsle\Models\LayoutPreset.cs" Link="Src\Models\LayoutPreset.cs" />
+    <Compile Include="..\..\DeskIsle\Models\TodoItem.cs" Link="Src\Models\TodoItem.cs" />
+    <!-- 上面的模型在属性上挂了一批 JsonConverter（ LayoutPresetConverter /
+         FlexibleStringConverter ），
+         它们全住在 JsonCompat.cs。这个文件是跨端键名归一的唯一实现处，
+         一并拉进来意味着模型相关的 NN 也顺便被测试保护着。 -->
+    <Compile Include="..\..\DeskIsle\Models\JsonCompat.cs" Link="Src\Models\JsonCompat.cs" />
+    <!-- 条目选中判据：纯字符串/集合运算，与 mac DeskIsleCore、Electron utils 同源 -->
+    <Compile Include="..\..\DeskIsle\Services\FileSelection.cs" Link="Src\Services\FileSelection.cs" />
+    <!-- 文件操作的键盘意图：只用 System，与 mac DeskIsleCore 同源 -->
+    <Compile Include="..\..\DeskIsle\Services\FileKeyShortcuts.cs" Link="Src\Services\FileKeyShortcuts.cs" />
+    <!-- 拖出的发起判据：纯数值比较，与 mac DeskIsleCore/FileDragLaunch.swift 同源。
+         ⚠️ 别把 Services/FileDragSource.cs 拉进来 —— 它用 System.Windows 的拖放 API -->
+    <Compile Include="..\..\DeskIsle\Services\FileDragLaunch.cs" Link="Src\Services\FileDragLaunch.cs" />
+    <!-- 选区的作用域：纯字符串比较，与 mac DeskIsleCore/FileSelection.swift 同源 -->
+    <Compile Include="..\..\DeskIsle\Services\FileSelectionScope.cs" Link="Src\Services\FileSelectionScope.cs" />
+    <!-- 已下线分区类型的剔除判据：纯字符串/集合运算，与 mac DeskIsleCore/RemovedPartition.swift 同源 -->
+    <Compile Include="..\..\DeskIsle\Services\RemovedPartition.cs" Link="Src\Services\RemovedPartition.cs" />
+    <!-- 键盘即时跳转与方向键导航：纯算法，与 mac DeskIsleCore/TypeToSelect.swift 同源 -->
+    <Compile Include="..\..\DeskIsle\Services\TypeToSelect.cs" Link="Src\Services\TypeToSelect.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

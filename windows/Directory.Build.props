@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    macOS / Linux 上编译 Windows 桌岛的开关。
+
+    本项目目标是 `net8.0-windows` + WPF + WinForms。默认情况下在非 Windows 机器上
+    `dotnet build` 会直接报 NETSDK1100（要求 Windows 才能构建 Windows 桌面应用）；
+    加上 `EnableWindowsTargeting=true` 后，SDK 会自动从 NuGet 拉 Windows 参考程序集，
+    于是**macOS 上也能把 WPF 与主工程编译出来**，改动即刻得到「能不能编过」的反馈。
+
+    这里把它写进 Directory.Build.props 而不是要求人手 `-p:EnableWindowsTargeting=true`，
+    目的只有一个：**别让人记住一条命令里的隐藏参数**。忘了就编不过，而这恰恰最容易
+    发生在「顺手改两行 C#」的时候。
+
+    ⚠️ 仅在本机不是 Windows 时生效：真在 Windows 上构建时不该多此一举。
+    ⚠️ 只解决**编译**，不解决**运行** —— 产出的 exe 仍需在 Windows 上跑。
+  -->
+  <PropertyGroup Condition="'$(OS)' != 'Windows_NT'">
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+</Project>

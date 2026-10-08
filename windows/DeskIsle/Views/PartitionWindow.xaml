@@ -1,0 +1,137 @@
+<Window x:Class="DeskIsle.Views.PartitionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:svc="clr-namespace:DeskIsle.Services"
+        mc:Ignorable="d"
+        Title="DeskIsle Partition" 
+        Height="220" Width="280"
+        WindowStyle="None" 
+        AllowsTransparency="True" 
+        Background="Transparent"
+        ShowInTaskbar="False"
+        MinWidth="160" MinHeight="40"
+        FontFamily="{StaticResource FluentFontFamily}"
+        MouseEnter="Window_MouseEnter"
+        MouseLeave="Window_MouseLeave"
+        AllowDrop="True"
+        DragLeave="Window_DragLeave">
+    <Window.Resources>
+        <!-- Fluent Header Action Button -->
+        <Style x:Key="HeaderBtnStyle" TargetType="Button">
+            <Setter Property="Width" Value="24"/>
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="{StaticResource FluentIconFont}"/>
+            <Setter Property="FontSize" Value="{x:Static svc:DeskFont.HeaderIcon}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="btnBorder" Background="{TemplateBinding Background}" CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="btnBorder" Property="Background" Value="{StaticResource SubtleHoverFillBrush}"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="btnBorder" Property="Background" Value="{StaticResource SubtlePressedFillBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <!-- Outermost Margin for Win32 Resizing Grip & Shadow -->
+    <Grid Margin="5">
+        <!-- Partition Windows 11 Fluent Acrylic Card Body (CornerRadius="8") -->
+        <Border x:Name="CardBorder" Background="{StaticResource CardBackgroundBrush}" CornerRadius="8" BorderThickness="1">
+            <Border.BorderBrush>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                    <GradientStop Color="#30FFFFFF" Offset="0.0"/>
+                    <GradientStop Color="#10FFFFFF" Offset="1.0"/>
+                </LinearGradientBrush>
+            </Border.BorderBrush>
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="10" ShadowDepth="2" Direction="270" Color="#000000" Opacity="0.38"/>
+            </Border.Effect>
+
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="38"/> <!-- Header (Win11 compact 38px) -->
+                    <RowDefinition Height="*"/>  <!-- Content -->
+                </Grid.RowDefinitions>
+
+                <!-- Header Bar -->
+                <Border x:Name="HeaderBorder" Grid.Row="0" Background="Transparent" Padding="10,0,8,0"
+                        AllowDrop="True" DragOver="Header_DragOver" DragLeave="Header_DragLeave" Drop="Header_Drop">
+                    <Grid VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Title & In-place Renaming -->
+                        <StackPanel x:Name="TitleArea" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <!-- Immutable Icon -->
+                            <TextBlock x:Name="IconText" Text="📁" FontSize="{x:Static svc:DeskFont.Glyph}" VerticalAlignment="Center" Margin="0,0,6,0"
+                                       MouseLeftButtonDown="TitleArea_MouseDown" Cursor="Hand"/>
+
+                            <!-- Display Title -->
+                            <TextBlock x:Name="TitleDisplay" Text="分区名称" Foreground="{StaticResource TextPrimaryBrush}" FontSize="{x:Static svc:DeskFont.Header}" FontWeight="SemiBold" 
+                                       VerticalAlignment="Center" Cursor="Hand" TextTrimming="CharacterEllipsis"
+                                       MouseLeftButtonDown="TitleArea_MouseDown" ToolTip="双击重命名 (最长10个汉字)"/>
+
+                            <!-- Badge -->
+                            <Border x:Name="BadgeBorder" Background="#26FFFFFF" CornerRadius="8" Padding="5,1" Margin="6,0,0,0" VerticalAlignment="Center" Visibility="Collapsed">
+                                <TextBlock x:Name="BadgeText" Text="0" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
+                            </Border>
+
+                            <!-- Edit Box (Hidden by default) -->
+                            <TextBox x:Name="TitleEditBox" Visibility="Collapsed" Background="#26FFFFFF" Foreground="#FFFFFF" 
+                                     BorderBrush="#0078D4" BorderThickness="1" FontSize="{x:Static svc:DeskFont.Header}" Padding="4,1" MaxLength="10" 
+                                     KeyDown="TitleEditBox_KeyDown" LostFocus="TitleEditBox_LostFocus" Width="120">
+                                <TextBox.Resources>
+                                    <Style TargetType="Border">
+                                        <Setter Property="CornerRadius" Value="4"/>
+                                    </Style>
+                                </TextBox.Resources>
+                            </TextBox>
+                        </StackPanel>
+
+                        <!-- Header Action Buttons (Segoe Fluent Vector Icons)
+                             顺序与 mac 基线逐一对齐：锁定 · 置顶 · 自适应 · 折叠 · 设置 · 删除
+                             「锁定」排最左是刻意的：它是锁定态下**唯一还能操作**的按钮（解锁出口），
+                             必须固定在最容易被摸到的位置，否则图标一压暗用户会找不到怎么解。 -->
+                        <StackPanel x:Name="HeaderActions" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <!-- Lock &#xE72E; (Locked) / &#xE785; (Unlocked) -->
+                            <Button x:Name="LockBtn" Style="{StaticResource HeaderBtnStyle}" Content="&#xE785;" ToolTip="锁定分区位置与尺寸" Click="Lock_Click" Margin="0,0,2,0"/>
+                            <!-- Pin (Topmost) &#xE842; / &#xE840; -->
+                            <Button x:Name="PinBtn" Style="{StaticResource HeaderBtnStyle}" Content="&#xE840;" ToolTip="置顶该分区" Click="Pin_Click" Margin="0,0,2,0"/>
+                            <!-- Auto-Fit (Adaptive) &#xE740; -->
+                            <Button x:Name="FitBtn" Style="{StaticResource HeaderBtnStyle}" Content="&#xE740;" ToolTip="自适应宽高 (宽度恢复为280)" Click="AutoFit_Click" Margin="0,0,2,0"/>
+                            <!-- Collapse &#xE70D; / &#xE70E; -->
+                            <Button x:Name="CollapseBtn" Style="{StaticResource HeaderBtnStyle}" Content="&#xE70E;" ToolTip="折叠/展开分区" Click="Collapse_Click" Margin="0,0,2,0"/>
+                            <!-- Settings &#xE713; -->
+                            <Button x:Name="SettingsBtn" Style="{StaticResource HeaderBtnStyle}" Content="&#xE713;" ToolTip="分区设置" Click="Settings_Click" Margin="0,0,2,0"/>
+                            <!-- Delete &#xE74D; -->
+                            <Button x:Name="DeleteBtn" Style="{StaticResource HeaderBtnStyle}" Content="&#xE74D;" ToolTip="删除分区" Click="Delete_Click"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Content Area -->
+                <Border x:Name="ContentArea" Grid.Row="1" Background="Transparent">
+                    <ContentControl x:Name="ContentHost"/>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

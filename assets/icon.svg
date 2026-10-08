@@ -1,0 +1,260 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Standard macOS App Icon Squircle Path (Apple Human Interface Guidelines) -->
+    <!-- 824x824 container centered in 1024x1024 canvas with Apple continuous squircle curvature -->
+    <clipPath id="macSquircleClip">
+      <path d="M 100,724 L 100,300 C 100,185 170,100 300,100 L 724,100 C 854,100 924,185 924,300 L 924,724 C 924,839 854,924 724,924 L 300,924 C 170,924 100,839 100,724 Z" />
+    </clipPath>
+
+    <!-- Native macOS App Icon Drop Shadow Filter -->
+    <filter id="macAppShadow" x="-15%" y="-15%" width="130%" height="135%">
+      <feDropShadow dx="0" dy="18" stdDeviation="16" flood-color="#000000" flood-opacity="0.32" />
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000000" flood-opacity="0.22" />
+    </filter>
+
+    <!-- Canvas Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1e3b" />
+      <stop offset="35%" stop-color="#12172f" />
+      <stop offset="70%" stop-color="#0c1022" />
+      <stop offset="100%" stop-color="#070915" />
+    </linearGradient>
+
+    <!-- Iridescent Outer Rim Gradient -->
+    <linearGradient id="rimGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.95" />
+      <stop offset="30%" stop-color="#818cf8" stop-opacity="0.9" />
+      <stop offset="65%" stop-color="#c084fc" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#34d399" stop-opacity="0.85" />
+    </linearGradient>
+
+    <!-- Ambient Nebulae -->
+    <radialGradient id="nebulaCyan" cx="28%" cy="28%" r="52%">
+      <stop offset="0%" stop-color="#0284c7" stop-opacity="0.5" />
+      <stop offset="60%" stop-color="#0ea5e9" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#0284c7" stop-opacity="0" />
+    </radialGradient>
+
+    <radialGradient id="nebulaPurple" cx="72%" cy="70%" r="52%">
+      <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.45" />
+      <stop offset="50%" stop-color="#9333ea" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#7c3aed" stop-opacity="0" />
+    </radialGradient>
+
+    <radialGradient id="nebulaEmerald" cx="48%" cy="85%" r="42%">
+      <stop offset="0%" stop-color="#059669" stop-opacity="0.35" />
+      <stop offset="100%" stop-color="#059669" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Top Specular Glass Sheen -->
+    <linearGradient id="topSheen" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.2" />
+      <stop offset="40%" stop-color="#ffffff" stop-opacity="0.04" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+
+    <!-- Center Radiant Core -->
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="45%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.9" />
+      <stop offset="25%" stop-color="#818cf8" stop-opacity="0.55" />
+      <stop offset="60%" stop-color="#6366f1" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#4f46e5" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Glass Island Gradients -->
+    <linearGradient id="topGlassGrad" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.26" />
+      <stop offset="45%" stop-color="#38bdf8" stop-opacity="0.14" />
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0.08" />
+    </linearGradient>
+
+    <linearGradient id="baseIslandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" stop-opacity="0.75" />
+      <stop offset="50%" stop-color="#0f172a" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#020617" stop-opacity="0.95" />
+    </linearGradient>
+
+    <linearGradient id="facetLeftGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.9" />
+    </linearGradient>
+
+    <linearGradient id="facetRightGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#1e1b4b" stop-opacity="0.95" />
+    </linearGradient>
+
+    <!-- Module Gradients -->
+    <linearGradient id="modBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#0284c7" stop-opacity="0.45" />
+    </linearGradient>
+
+    <linearGradient id="modPurple" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c084fc" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#7c3aed" stop-opacity="0.45" />
+    </linearGradient>
+
+    <linearGradient id="modEmerald" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#059669" stop-opacity="0.45" />
+    </linearGradient>
+
+    <linearGradient id="modAmber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#d97706" stop-opacity="0.45" />
+    </linearGradient>
+
+    <linearGradient id="modRose" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fb7185" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#e11d48" stop-opacity="0.45" />
+    </linearGradient>
+
+    <!-- Filters -->
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    
+    <filter id="coreBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="28" />
+    </filter>
+  </defs>
+
+  <!-- Group with native macOS drop shadow -->
+  <g filter="url(#macAppShadow)">
+    <!-- Clipped to Official macOS App Icon Squircle Path -->
+    <g clip-path="url(#macSquircleClip)">
+      <!-- Base App Canvas -->
+      <rect x="100" y="100" width="824" height="824" fill="url(#bgGrad)" />
+
+      <!-- Ambient Colorful Nebulae -->
+      <rect x="100" y="100" width="824" height="824" fill="url(#nebulaCyan)" />
+      <rect x="100" y="100" width="824" height="824" fill="url(#nebulaPurple)" />
+      <rect x="100" y="100" width="824" height="824" fill="url(#nebulaEmerald)" />
+
+      <!-- Top Specular Glass Reflection -->
+      <rect x="100" y="100" width="824" height="380" fill="url(#topSheen)" />
+
+      <!-- Isometric Matrix Grid representing Infinite Desktop Canvas -->
+      <g stroke="#ffffff" stroke-opacity="0.06" stroke-width="1.5" stroke-dasharray="4 8">
+        <line x1="512" y1="210" x2="850" y2="410" />
+        <line x1="512" y1="210" x2="174" y2="410" />
+        <line x1="174" y1="410" x2="512" y2="610" />
+        <line x1="850" y1="410" x2="512" y2="610" />
+
+        <line x1="512" y1="360" x2="850" y2="560" />
+        <line x1="512" y1="360" x2="174" y2="560" />
+        <line x1="174" y1="560" x2="512" y2="760" />
+        <line x1="850" y1="560" x2="512" y2="760" />
+      </g>
+
+      <!-- Core Radiant Energy in Background -->
+      <circle cx="512" cy="516" r="160" fill="url(#coreGlow)" filter="url(#coreBlur)" opacity="0.85" />
+
+      <!-- ============================================== -->
+      <!-- LOWER TIER: FOUNDATION EXPANSION DOCK          -->
+      <!-- ============================================== -->
+      <g transform="translate(0, 140)">
+        <!-- Projection Lines connecting tiers -->
+        <line x1="230" y1="470" x2="230" y2="350" stroke="#38bdf8" stroke-opacity="0.25" stroke-dasharray="4 6" stroke-width="2" />
+        <line x1="794" y1="470" x2="794" y2="350" stroke="#c084fc" stroke-opacity="0.25" stroke-dasharray="4 6" stroke-width="2" />
+        <line x1="512" y1="640" x2="512" y2="520" stroke="#34d399" stroke-opacity="0.25" stroke-dasharray="4 6" stroke-width="2" />
+
+        <!-- Foundation Siphon Outline -->
+        <polygon points="512,300 794,470 512,640 230,470" fill="none" stroke="#6366f1" stroke-opacity="0.2" stroke-width="2" stroke-dasharray="6 6" />
+        
+        <!-- Foundation Center Glass Pad -->
+        <polygon points="512,374 656,460 512,546 368,460" fill="url(#topGlassGrad)" stroke="#38bdf8" stroke-opacity="0.3" stroke-width="2" />
+        <polygon points="368,460 512,546 512,560 368,474" fill="url(#facetLeftGrad)" opacity="0.6" />
+        <polygon points="512,546 656,460 656,474 512,560" fill="url(#facetRightGrad)" opacity="0.6" />
+      </g>
+
+      <!-- ============================================== -->
+      <!-- MAIN TIER: FLOATING DESK ISLE (GLASS ARCHIPELAGO) -->
+      <!-- ============================================== -->
+      <g transform="translate(0, 20)">
+        <!-- 3D Island Base Extrusion Facets -->
+        <polygon points="210,465 512,645 512,690 210,510" fill="url(#facetLeftGrad)" />
+        <polygon points="512,645 814,465 814,510 512,690" fill="url(#facetRightGrad)" />
+        <!-- Bottom rim highlight -->
+        <polyline points="210,510 512,690 814,510" fill="none" stroke="#a855f7" stroke-opacity="0.55" stroke-width="2.5" />
+
+        <!-- Main Island Top Glass Surface -->
+        <polygon points="512,285 814,465 512,645 210,465" fill="url(#baseIslandGrad)" />
+        <polygon points="512,285 814,465 512,645 210,465" fill="url(#topGlassGrad)" />
+        <!-- Island Top Crystal Glowing Rim -->
+        <polygon points="512,285 814,465 512,645 210,465" fill="none" stroke="#7dd3fc" stroke-opacity="0.8" stroke-width="3.5" />
+
+        <!-- ============================================== -->
+        <!-- EXPANDABLE MODULAR COMPONENTS (MODULAR ECOSYSTEM)-->
+        <!-- ============================================== -->
+
+        <!-- Module A (West Island): Document / Smart Files Stack -->
+        <g>
+          <polygon points="278,422 396,353 458,389 340,458" fill="url(#modBlue)" stroke="#7dd3fc" stroke-opacity="0.9" stroke-width="2" />
+          <line x1="316" y1="413" x2="390" y2="370" stroke="#ffffff" stroke-opacity="0.75" stroke-width="2.5" stroke-linecap="round" />
+          <line x1="332" y1="429" x2="410" y2="383" stroke="#ffffff" stroke-opacity="0.5" stroke-width="2.5" stroke-linecap="round" />
+          <line x1="348" y1="445" x2="396" y2="417" stroke="#ffffff" stroke-opacity="0.3" stroke-width="2.5" stroke-linecap="round" />
+        </g>
+
+        <!-- Module B (North Island): Media / App Tile -->
+        <g>
+          <polygon points="450,322 512,286 574,322 512,358" fill="url(#modPurple)" stroke="#d8b4fe" stroke-opacity="0.9" stroke-width="2" />
+          <polygon points="505,313 524,323 505,333" fill="#ffffff" fill-opacity="0.9" />
+        </g>
+
+        <!-- Module C (East Island): Note / Checklist Module -->
+        <g>
+          <polygon points="570,389 632,353 750,422 688,458" fill="url(#modAmber)" stroke="#fde68a" stroke-opacity="0.9" stroke-width="2" />
+          <line x1="632" y1="380" x2="706" y2="422" stroke="#ffffff" stroke-opacity="0.75" stroke-width="2.5" stroke-linecap="round" />
+          <line x1="616" y1="396" x2="690" y2="438" stroke="#ffffff" stroke-opacity="0.5" stroke-width="2.5" stroke-linecap="round" />
+          <circle cx="622" cy="374" r="3.5" fill="#fef08a" />
+          <circle cx="606" cy="390" r="3.5" fill="#fef08a" />
+        </g>
+
+        <!-- Module D (South-East Float): Interactive Collector / Inbox Pocket -->
+        <g>
+          <polygon points="512,492 628,424 576,394 460,462" fill="url(#modEmerald)" stroke="#6ee7b7" stroke-opacity="0.9" stroke-width="2" />
+          <line x1="512" y1="436" x2="562" y2="407" stroke="#ffffff" stroke-opacity="0.8" stroke-width="2.5" stroke-linecap="round" />
+          <line x1="530" y1="457" x2="552" y2="444" stroke="#ffffff" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" />
+        </g>
+
+        <!-- Module E (South-West Float): Storage / Drive Partition -->
+        <g>
+          <polygon points="398,462 460,424 408,394 346,432" fill="url(#modRose)" stroke="#fda4af" stroke-opacity="0.9" stroke-width="2" />
+          <line x1="378" y1="438" x2="430" y2="408" stroke="#ffffff" stroke-opacity="0.75" stroke-width="2.5" stroke-linecap="round" />
+        </g>
+
+        <!-- Center Nexus Hub (Core Engine of DeskIsle) -->
+        <g transform="translate(0, -8)">
+          <polygon points="512,416 554,441 512,466 470,441" fill="#ffffff" fill-opacity="0.45" stroke="#ffffff" stroke-opacity="0.9" stroke-width="2" />
+          <circle cx="512" cy="441" r="14" fill="#38bdf8" filter="url(#softGlow)" />
+          <circle cx="512" cy="441" r="6" fill="#ffffff" />
+        </g>
+      </g>
+
+      <!-- Expandable Satellite Nodes -->
+      <g transform="translate(512, 190)">
+        <polygon points="0,-28 42,0 0,28 -42,0" fill="url(#topGlassGrad)" stroke="#38bdf8" stroke-width="2" />
+        <circle cx="0" cy="0" r="5" fill="#e0f2fe" />
+        <line x1="0" y1="28" x2="0" y2="92" stroke="#38bdf8" stroke-opacity="0.35" stroke-dasharray="3 4" stroke-width="1.5" />
+      </g>
+
+      <g transform="translate(160, 485)">
+        <polygon points="0,-24 36,0 0,24 -36,0" fill="url(#topGlassGrad)" stroke="#818cf8" stroke-width="2" />
+        <circle cx="0" cy="0" r="4" fill="#ede9fe" />
+        <line x1="36" y1="0" x2="90" y2="0" stroke="#818cf8" stroke-opacity="0.35" stroke-dasharray="3 4" stroke-width="1.5" />
+      </g>
+
+      <g transform="translate(864, 485)">
+        <polygon points="0,-24 36,0 0,24 -36,0" fill="url(#topGlassGrad)" stroke="#c084fc" stroke-width="2" />
+        <circle cx="0" cy="0" r="4" fill="#fae8ff" />
+        <line x1="-36" y1="0" x2="-90" y2="0" stroke="#c084fc" stroke-opacity="0.35" stroke-dasharray="3 4" stroke-width="1.5" />
+      </g>
+    </g>
+
+    <!-- macOS Official Squircle Rim Border (Luminous Iridescent Edge, No Black Bezel) -->
+    <path d="M 100,724 L 100,300 C 100,185 170,100 300,100 L 724,100 C 854,100 924,185 924,300 L 924,724 C 924,839 854,924 724,924 L 300,924 C 170,924 100,839 100,724 Z" fill="none" stroke="url(#rimGrad)" stroke-width="3.5" opacity="0.9" />
+  </g>
+</svg>

@@ -1,0 +1,144 @@
+<Window x:Class="DeskIsle.Views.TopBarWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:svc="clr-namespace:DeskIsle.Services"
+        mc:Ignorable="d"
+        Title="DeskIsle TopBar" 
+        Height="44"
+        SizeToContent="Width"
+        MinWidth="460"
+        WindowStyle="None" 
+        AllowsTransparency="True" 
+        Background="Transparent"
+        Topmost="True"
+        FontFamily="{StaticResource FluentFontFamily}"
+        ShowInTaskbar="False">
+    <Window.Resources>
+        <!-- Fluent Island Button Style -->
+        <Style x:Key="IslandBtnStyle" TargetType="Button">
+            <Setter Property="Width" Value="30"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="{StaticResource FluentIconFont}"/>
+            <Setter Property="FontSize" Value="{x:Static svc:DeskFont.TopIcon}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="15">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource SubtleHoverFillBrush}"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource SubtlePressedFillBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Fluent Align Toggle RadioButton Style -->
+        <Style x:Key="AlignToggleBtnStyle" TargetType="RadioButton">
+            <Setter Property="Width" Value="28"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="{StaticResource FluentIconFont}"/>
+            <Setter Property="FontSize" Value="{x:Static svc:DeskFont.TopIcon}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#250078D4"/>
+                                <Setter Property="Foreground" Value="#0078D4"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource SubtleHoverFillBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <!-- Windows 11 Fluent Floating Pill Container -->
+        <Border Background="{StaticResource CardBackgroundBrush}" CornerRadius="22" BorderThickness="1">
+            <Border.BorderBrush>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                    <GradientStop Color="#35FFFFFF" Offset="0.0"/>
+                    <GradientStop Color="#10FFFFFF" Offset="1.0"/>
+                </LinearGradientBrush>
+            </Border.BorderBrush>
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="12" ShadowDepth="3" Direction="270" Color="#000000" Opacity="0.4"/>
+            </Border.Effect>
+
+            <!-- 单条形态：窗口宽度随内容自然变化（SizeToContent="Width"），
+                 不必写死一个宽度常量 —— 也就不会再出现
+                 「加了个按钮结果品牌名被压成两行」那种事。 -->
+            <Grid Margin="12,0,12,0" VerticalAlignment="Center">
+
+                <!-- ══ 常规条 ══
+                     顺序与 mac 基线逐一对齐：
+                     搜索 · 新建 · 显示/隐藏 │ 顶部/左侧/右侧 │ 隐藏顶栏 · 设置 · 退出
+                     「自由平铺(grid)」已从顶栏移除 —— 它与「顶部排序」的落位高度重叠，
+                     对齐模式本身保留，入口在托盘菜单的「分区排版对齐」子菜单里。
+                     「锁定」也已刻意移除（与 mac 基线一致）：它是**状态型开关**，混在动作型
+                     按钮里误点后用户只觉得「分区突然拖不动了」。锁定功能保留在托盘菜单
+                     「🔒 锁定/解锁本屏分区位置」，分区标题栏也仍有分区级锁定。 -->
+                <StackPanel x:Name="NormalBar" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="🏝️" FontSize="{x:Static svc:DeskFont.Glyph}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+
+                    <!-- ⚠️ 搜索在新建**之前**（与 mac / Electron 一致）：先找到已有内容比新建更常用。
+                         改顺序必须三端同步改 mac PartitionView.swift 与 Electron TopBar.tsx。 -->
+                    <!-- 组 1：搜索 · 新建 · 显示/隐藏 -->
+                    <!-- Fluent Search &#xE721; -->
+                    <Button x:Name="SearchBtn" Style="{StaticResource IslandBtnStyle}" Content="&#xE721;" ToolTip="全局搜索 (可自定义快捷键)" Click="Search_Click" Margin="0,0,2,0"/>
+                    <!-- Fluent Add &#xE710; -->
+                    <Button x:Name="NewBtn" Style="{StaticResource IslandBtnStyle}" Content="&#xE710;" ToolTip="新建浮岛分区" Click="NewPartition_Click" Margin="0,0,2,0"/>
+                    <!-- Fluent View/Eye &#xE890; -->
+                    <Button x:Name="GhostBtn" Style="{StaticResource IslandBtnStyle}" Content="&#xE890;" ToolTip="显示/隐藏本屏浮岛 (幽灵模式)" Click="GhostMode_Click" Margin="0,0,2,0"/>
+
+                    <Rectangle Width="1" Height="16" Fill="#20FFFFFF" Margin="6,0,6,0"/>
+
+                    <!-- 组 2：对齐模式（Fluent Align Glyphs） -->
+                    <!-- Top Horizontal: &#xE8E4; -->
+                    <RadioButton x:Name="AlignTopBtn" Style="{StaticResource AlignToggleBtnStyle}" Content="&#xE8E4;" ToolTip="顶部横向高度均衡排序" Click="AlignTop_Click" Margin="0,0,2,0"/>
+                    <!-- Left Vertical: &#xE8E2; -->
+                    <RadioButton x:Name="AlignLeftBtn" Style="{StaticResource AlignToggleBtnStyle}" Content="&#xE8E2;" ToolTip="左侧纵向高度均衡对齐" Click="AlignLeft_Click" Margin="0,0,2,0"/>
+                    <!-- Right Vertical: &#xE8E3; -->
+                    <RadioButton x:Name="AlignRightBtn" Style="{StaticResource AlignToggleBtnStyle}" Content="&#xE8E3;" ToolTip="右侧纵向高度均衡对齐" Click="AlignRight_Click" Margin="0,0,2,0"/>
+                    <!-- Grid: &#xE80A; -->
+                    <RadioButton x:Name="AlignGridBtn" Style="{StaticResource AlignToggleBtnStyle}" Content="&#xE80A;" ToolTip="网格规整排列" Click="AlignGrid_Click"/>
+
+                    <Rectangle Width="1" Height="16" Fill="#20FFFFFF" Margin="6,0,6,0"/>
+
+                    <!-- 组 3：隐藏顶栏 · 设置 · 退出 -->
+                    <!-- Fluent Hide/Minimize &#xE738; -->
+                    <Button x:Name="HideTopBarBtn" Style="{StaticResource IslandBtnStyle}" Content="&#xE738;" ToolTip="隐藏顶部导航栏" Click="HideTopBar_Click" Margin="0,0,2,0"/>
+                    <!-- Fluent Settings: &#xE713; -->
+                    <Button x:Name="SettingsBtn" Style="{StaticResource IslandBtnStyle}" Content="&#xE713;" ToolTip="全局设置与备份" Click="Settings_Click" Margin="0,0,2,0"/>
+                    <!-- Fluent Power: &#xE7E8; -->
+                    <Button x:Name="QuitBtn" Style="{StaticResource IslandBtnStyle}" Content="&#xE7E8;" ToolTip="退出 DeskIsle" Click="Quit_Click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

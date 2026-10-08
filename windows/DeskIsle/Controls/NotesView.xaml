@@ -1,0 +1,57 @@
+<UserControl x:Class="DeskIsle.Controls.NotesView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" 
+             d:DesignHeight="200" d:DesignWidth="280"
+             AllowDrop="True" Drop="UserControl_Drop" DragOver="UserControl_DragOver">
+    <Grid Margin="8,4,8,8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Border Grid.Row="0" Background="{StaticResource SubtleFillBrush}" CornerRadius="4" BorderBrush="#12FFFFFF" BorderThickness="1">
+            <Grid>
+                <TextBox x:Name="NotesTextBox" 
+                         Background="Transparent" 
+                         BorderThickness="0" 
+                         Foreground="{StaticResource TextPrimaryBrush}" 
+                         FontSize="12" 
+                         FontFamily="{StaticResource FluentFontFamily}" 
+                         AcceptsReturn="True" 
+                         TextWrapping="Wrap" 
+                         VerticalScrollBarVisibility="Auto" 
+                         Padding="8" 
+                         TextChanged="NotesTextBox_TextChanged"
+                         PreviewMouseLeftButtonUp="NotesTextBox_PreviewMouseLeftButtonUp"
+                         ContextMenuOpening="NotesTextBox_ContextMenuOpening"/>
+                <TextBlock x:Name="PlaceholderText"
+                           Text="在此输入便签内容…"
+                           Foreground="#55FFFFFF"
+                           FontSize="12"
+                           FontFamily="{StaticResource FluentFontFamily}"
+                           Padding="8"
+                           IsHitTestVisible="False"
+                           Visibility="Visible"/>
+            </Grid>
+        </Border>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,4,0">
+            <TextBlock x:Name="StatsText"
+                       Text="0 字符 · 0 行"
+                       Foreground="#70FFFFFF"
+                       FontSize="10"
+                       VerticalAlignment="Center"/>
+            <Button x:Name="ExportBtn"
+                    Content="导出"
+                    Background="Transparent"
+                    Foreground="#90FFFFFF"
+                    BorderThickness="0"
+                    FontSize="10"
+                    Cursor="Hand"
+                    Margin="6,0,0,0"
+                    Click="ExportBtn_Click"
+                    ToolTip="导出为文本文档 (.txt)"/>
+        </StackPanel>
+    </Grid>
+</UserControl>
