@@ -1859,7 +1859,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "取消")
         guard runAlert(alert, on: nil) == .alertFirstButtonReturn else { return }
 
-        saveNow()   // 把「当前状态」也留在历史里，保证本次操作可回滚
+        // ⚠️ forceSnapshot 必须为 true：这里刚刚才发生过一次普通保存（删分区、拖动都会立刻落盘），
+        // 走 60s 节流闸门会被判「距上次太近」而不留快照 —— 底没留下，下一步却照样用旧快照覆盖了
+        // 当前配置，上面那句「之后仍可再恢复回来」（以及本函数的文档注释）就成了空头承诺。
+        saveNow(forceSnapshot: true)   // 把「当前状态」留在历史里，保证本次操作可回滚
         let fm = FileManager.default
         guard let data = try? Data(contentsOf: latest),
               (try? JSONSerialization.jsonObject(with: data)) != nil else {
@@ -2704,9 +2707,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         saveWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: w)
     }
-    private func saveNow() {
+    private func saveNow(forceSnapshot: Bool = false) {
         saveWork?.cancel()
-        config.save()
+        config.save(forceSnapshot: forceSnapshot)
     }
 
     // MARK: - 分区图层动态切换与激活

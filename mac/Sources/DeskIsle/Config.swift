@@ -87,11 +87,15 @@ final class Config: ObservableObject {
     /// ⚠️ rename 会替换 inode：任何**监听本文件 fd** 的 watcher 在第一次 save 后就会
     /// 失效（fd 指向已删除的旧 inode，永远不再收到事件）。热重载必须监听**所在目录**
     /// 并比较 mtime（见 AppDelegate.startConfigWatching），不能监听文件本身。
-    func save() {
+    /// - Parameter forceSnapshot: **忽略历史快照的节流闸门**，无条件给即将被覆盖的这一份留底。
+    ///   只在「马上要用旧快照覆盖当前配置」之前传 true（见 `ConfigHistory.shouldSnapshot` 的注释）：
+    ///   那一刻往往刚刚才保存过，走闸门会被判「距上次太近」而跳过，于是步子迈出去了、
+    ///   底却没留 —— UI 承诺的「之后仍可恢复回来」当场失效。
+    func save(forceSnapshot: Bool = false) {
         let fm = FileManager.default
         lastSaveTime = Date()
         ensureDirectory()   // 兜底：目录被清理后仍能恢复写入
-        pushHistorySnapshot()   // 先给「即将被覆盖的这一份」留快照
+        pushHistorySnapshot(force: forceSnapshot)   // 先给「即将被覆盖的这一份」留快照
         let bak = url.appendingPathExtension("bak")
         if fm.fileExists(atPath: url.path) {
             try? fm.removeItem(at: bak)
@@ -102,8 +106,18 @@ final class Config: ObservableObject {
         let tmp = url.appendingPathExtension("tmp")
         do {
             try data.write(to: tmp, options: .atomic)
-            if fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
-            try fm.moveItem(at: tmp, to: url)
+            if fm.fileExists(atPath: url.path) {
+                // ⚠️ 必须是**单步**原子替换。原先这里写的是 `removeItem(url)` + `moveItem(tmp→url)`
+                // 两步，而两步之间存在一个真实的窗口：进程在这中间被杀（或断电），
+                // 配置文件就**真的不在了** ——只剩 .bak 兜底，而 .bak 是上一次保存的内容，
+                // 最近一次改动照样丢。`replaceItemAt` 的结果只有「旧文件」或「新文件」两种可能。
+                //
+                // 顺带保留那条老经验：它同样会替换 inode，所以「热重载必须监听所在目录、
+                // 不能监听文件本身」的结论对这里依然成立（见本节开头的注释）。
+                _ = try fm.replaceItemAt(url, withItemAt: tmp)
+            } else {
+                try fm.moveItem(at: tmp, to: url)
+            }
         } catch {
             NSLog("[DeskIsle] 配置保存失败: %@", error.localizedDescription)
         }
@@ -260,17 +274,30 @@ final class Config: ObservableObject {
 
     /// 把当前磁盘上的配置复制一份进历史目录。写新内容**之前**调用，
     /// 因此快照内容永远是「上一次已知可用的状态」。
-    private func pushHistorySnapshot() {
+    private func pushHistorySnapshot(force: Bool = false) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else { return }
         let now = Date()
-        guard now.timeIntervalSince(lastHistoryAt) >= historyMinInterval else { return }
+        guard ConfigHistory.shouldSnapshot(now: now,
+                                           lastHistoryAt: lastHistoryAt,
+                                           minInterval: historyMinInterval,
+                                           force: force) else { return }
         lastHistoryAt = now
 
         try? fm.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyyMMdd-HHmmss"
-        let dest = historyDirectory.appendingPathComponent("deskisle_config-\(fmt.string(from: now)).json")
+        let base = fmt.string(from: now)
+        // 同一秒内撞名时逐层加后缀：直接 `copyItem` 到已存在的目标会走 `try?` 静默失败，
+        // 结果是「旧配置已经被覆盖、可回滚的那一版却没写成」，且没有任何报错。
+        var index = 0
+        var dest = historyDirectory.appendingPathComponent(
+            ConfigHistory.snapshotFileName(base: base, collisionIndex: index))
+        while fm.fileExists(atPath: dest.path) {
+            index += 1
+            dest = historyDirectory.appendingPathComponent(
+                ConfigHistory.snapshotFileName(base: base, collisionIndex: index))
+        }
         try? fm.copyItem(at: url, to: dest)
         pruneHistory()
     }

@@ -55,7 +55,9 @@ final class FolderWatcher {
     private var watched: [String: Watched] = [:]
     /// id → 根目录。FSEvents 事件按路径反查归属时用（见 `PathOwnership.owner`）。
     private var rootsByID: [String: String] = [:]
-    private var streams: [FSEventStreamRef] = []
+
+    /// **根目录 → 流**。按路径而不是序号索引，是为了能做增量（见 `syncStreams`）。
+    private var streams: [String: FSEventStreamRef] = [:]
 
     private var pending: Set<String> = []
     private var flushScheduled = false
@@ -111,11 +113,11 @@ final class FolderWatcher {
         }
         watched = next
         rootsByID = roots
-        restartStreams()
+        syncStreams()
     }
 
     func start() {
-        restartStreams()
+        syncStreams()
         guard timer == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: .main)
         t.schedule(deadline: .now() + fastInterval, repeating: fastInterval)
@@ -127,11 +129,7 @@ final class FolderWatcher {
     func stop() {
         timer?.cancel()
         timer = nil
-        for s in streams {
-            FSEventStreamStop(s)
-            FSEventStreamInvalidate(s)
-            FSEventStreamRelease(s)
-        }
+        for (_, s) in streams { dispose(s) }
         streams.removeAll()
         watched.removeAll()
         rootsByID.removeAll()
@@ -143,18 +141,38 @@ final class FolderWatcher {
 
     // MARK: - FSEvents
 
-    /// 按当前 `rootsByID` 重建全部流。旧的先停后释放：`FSEventStreamRelease` 前
-    /// 必须先 `Stop` + `Invalidate`，否则回调可能落在已经没人持有的对象上。
-    private func restartStreams() {
-        for s in streams {
-            FSEventStreamStop(s)
-            FSEventStreamInvalidate(s)
-            FSEventStreamRelease(s)
+    /// 让流集合跟上当前的 `rootsByID`（**增量**）。
+    ///
+    /// ## 为什么不能「先全停再全建」
+    /// 改之前这里是全量重建。而 `update()` 在**新建 / 删除任何一个 portal 分区**时都会被调用
+    /// （`AppDelegate` 的 `createPartition` / `removePartition`），于是每动一次分区，
+    /// 其它所有 portal 的流都被连坐销毁重建。
+    /// 代价有两笔：① 重建是 stop+invalidate+release+create+start 一串系统调用，N 个分区各来一遍；
+    /// ② **更隐蔽也更要紧** —— 新流用 `kFSEventStreamEventIdSinceNow` 订阅，
+    /// 意味着「重建这一瞬间之后」才开始收件，窗口期内发生的变化**永久漏掉**。
+    /// 轮询兜底最终能捞回来（10s 一次 mtime），但 FSEvents 的低延迟优势在那一刻是失效的。
+    ///
+    /// 增量之后：只有真正新增 / 失效的根目录会动，路径没变的分区**它的流从头到尾没停过**，
+    /// 既没有漏窗，也没有无谓的系统调用。
+    ///
+    /// 顺带一个副产品：键是路径而不是 id，两个分区映射同一个目录时只会建**一条**流
+    /// （原来会建两条重复监听同一路径的流）。
+    private func syncStreams() {
+        let wanted = Set(rootsByID.values)
+        for (path, s) in streams where !wanted.contains(path) {
+            dispose(s)
+            streams.removeValue(forKey: path)
         }
-        streams.removeAll()
-        for (_, root) in rootsByID {
-            if let s = makeStream(root: root) { streams.append(s) }
+        for path in wanted where streams[path] == nil {
+            if let s = makeStream(root: path) { streams[path] = s }
         }
+    }
+
+    private func dispose(_ s: FSEventStreamRef) {
+        // ⚠️ `FSEventStreamRelease` 之前必须先 Stop + Invalidate，否则回调可能落在没人持有的对象上
+        FSEventStreamStop(s)
+        FSEventStreamInvalidate(s)
+        FSEventStreamRelease(s)
     }
 
     private func makeStream(root: String) -> FSEventStreamRef? {
