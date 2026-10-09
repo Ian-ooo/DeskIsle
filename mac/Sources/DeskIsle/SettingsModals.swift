@@ -1118,7 +1118,8 @@ struct GlobalSettingsView: View {
     /// 「保存布局预设」输入框的内容
     @State private var presetName = ""
     /// 辅助功能授权状态。`AXIsProcessTrusted()` 是一次进程外查询，
-    /// 不能在 body 里每次重算 → 只在 struct 初始化与用户点过「去授权」后刷新。
+    /// 不能在 body 里每次重算 → struct 初始化时取一次，之后靠
+    /// `accessibilityTrustChanged` 通知刷新（AppDelegate 在设置面板可见期间轮询 TCC 状态）。
     @State private var axTrusted = AXIsProcessTrusted()
 
     /// 本屏（光标所在屏 —— 弹窗与托盘菜单都以此为准）的布局预设。
@@ -1148,19 +1149,20 @@ struct GlobalSettingsView: View {
 
     /// 申请辅助功能授权：先弹系统授权对话框，再打开对应的系统设置页面。
     ///
-    /// ⚠️ 勾选后不会在本进程里即时生效 —— 全局鼠标监视器必须**重装**才会开始派发
-    /// （见 `AppDelegate.installGlobalMouseMonitor` 的注释）。因此这里隔 1.5s 复查一次，
-    /// 并调用 `refreshMouseMonitoring()` 完成「重装 + 关轮询」。
+    /// ⚠️ 勾选发生在**系统设置进程**里，本应用收不到任何通知，且用户来回一趟往往远超
+    /// 一两秒 —— 所以这里**不**做「点完隔 1.5s 复查一次」那种一次性补救（实测抓不到）：
+    /// 面板可见期间的轮询和随后的通知都归 AppDelegate 管（见
+    /// `beginAccessibilityTrustPolling` / `syncAccessibilityTrust`），
+    /// 状态一变就重装监视链并 post `accessibilityTrustChanged`，本行随即翻成「已开启」。
     private func requestAccessibilityTrust() {
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         AXIsProcessTrustedWithOptions(opts)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            axTrusted = AXIsProcessTrusted()
-            AppDelegate.shared?.refreshMouseMonitoring()
-        }
+        // 弹窗里当场勾了的话，切回来前状态就已经变了 —— 立刻对齐一次，不等下一拍轮询
+        axTrusted = AXIsProcessTrusted()
+        AppDelegate.shared?.refreshMouseMonitoring()
     }
 
     private func savePreset() {
@@ -1671,6 +1673,12 @@ struct GlobalSettingsView: View {
         .onAppear {
             shortcut = AppDelegate.shared?.currentShortcut ?? .default
             searchSc = AppDelegate.shared?.searchShortcut ?? .searchDefault
+            axTrusted = AXIsProcessTrusted()
+        }
+        // 授权状态（用户在系统设置里勾选 / 取消）由 AppDelegate 在面板可见期间盯着，
+        // 一旦变化就重装监视链并 post 这条通知，本行随即从「去授权」翻成「已开启」。
+        .onReceive(NotificationCenter.default.publisher(for: .accessibilityTrustChanged)) { _ in
+            axTrusted = AXIsProcessTrusted()
         }
     }
 }

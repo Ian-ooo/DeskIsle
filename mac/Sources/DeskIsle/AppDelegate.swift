@@ -26,6 +26,8 @@ extension Notification.Name {
     static let portalNavigateParent = Notification.Name("DeskIsle.portalNavigateParent")
     /// 映射文件夹深度键盘流：下钻进入选中文件夹/打开（⌘↓ 或 ⌘O）。object = 分区 id
     static let portalEnterSelected = Notification.Name("DeskIsle.portalEnterSelected")
+    /// 辅助功能授权状态变化了（用户在系统设置里勾选 / 取消勾选）。设置面板据此刷新显示。
+    static let accessibilityTrustChanged = Notification.Name("DeskIsle.accessibilityTrustChanged")
 }
 
 // 排版基准 `Layout`、尺寸口径 `PartitionMetrics`、坐标解算 `LayoutEngine`
@@ -956,10 +958,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NotificationCenter.default.removeObserver(t)
                 self.settingsCloseToken = nil
             }
+            // 面板关了就别再查授权了 —— 这条轮询的存在时间只到面板可见为止
+            self.endAccessibilityTrustPolling()
             self.deactivateNonPinnedPartitions()
         }
         NSApp.activate(ignoringOtherApps: true)
         p.makeKeyAndOrderFront(nil)
+        // 面板可见期间跟踪授权状态：用户在系统设置里勾上之后回到这里，状态应当立刻翻过来
+        beginAccessibilityTrustPolling()
     }
 
     func openGlobalSettings() {
@@ -2847,6 +2853,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // MARK: - 辅助功能授权状态跟踪
+
+    /// 授权状态轮询定时器。**只在设置面板打开期间存在**（关闭时撤销）。
+    private var axTrustTimer: Timer?
+    /// 上一次观测到的授权状态 —— 只在**变化**时重装监视链，避免每秒白重装一次。
+    private var lastAXTrusted = false
+
+    /// 开始盯着辅助功能授权状态。
+    ///
+    /// ## 为什么只能轮询
+    /// 勾选发生在**另一个进程**（系统设置），macOS 不会给本应用任何通知，
+    /// 而 `AXIsProcessTrusted()` 的取值又是随勾选即时变化的 —— 只能自己定期去查。
+    ///
+    /// ## 为什么敢开这个轮询
+    /// 命中裁决那次优化省掉的是**常驻**唤醒；这里 1s 一次的定时器的生命周期被
+    /// 死死绑在「设置面板可见」这个窗口内（`presentSettingsPanel` 开、`willClose` 关），
+    /// 面板一关就 invalidate，不会变成新的常驻开销。
+    ///
+    /// `.common` 模式是必须的：面板是 key 窗口时主 runloop 会进入其它模式，
+    /// 默认模式下的定时器会在拖动面板等交互期间停摆。
+    private func beginAccessibilityTrustPolling() {
+        endAccessibilityTrustPolling()
+        lastAXTrusted = AXIsProcessTrusted()
+        // 开面板时先无条件对齐一次：用户可能在面板打开之前就已经勾好了
+        refreshMouseMonitoring()
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.syncAccessibilityTrust()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        axTrustTimer = t
+    }
+
+    private func endAccessibilityTrustPolling() {
+        axTrustTimer?.invalidate()
+        axTrustTimer = nil
+    }
+
+    /// 授权状态变了才动手：重装鼠标监视链 + 通知设置面板刷新显示。
+    ///
+    /// ⚠️ 重装是**必须**的一步，不只是为了 UI：拿到授权后，之前那个（未授权时创建的）
+    /// 全局监视器对象**不会**自动开始派发事件，不重装的话应用会一直点不动。
+    private func syncAccessibilityTrust() {
+        let trusted = AXIsProcessTrusted()
+        guard trusted != lastAXTrusted else { return }
+        lastAXTrusted = trusted
+        refreshMouseMonitoring()
+        NotificationCenter.default.post(name: .accessibilityTrustChanged, object: nil)
+        NSLog("[DeskIsle] 辅助功能授权状态变化 → trusted=%@，已重装鼠标监视链", trusted ? "YES" : "NO")
+    }
+
     /// 兜底：没有全局鼠标监视器或缺授权时，用轮询顶上命中裁决。
     ///
     /// ## ⚠️ 这里为什么只能是轮询（NSTrackingArea 结构性不可用）
@@ -2884,10 +2940,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             let changed = self.refreshHitTest()
-            // 若后续获得了授权且全局监视器有效，平滑关闭轮询
-            if self.globalMouse != nil && AXIsProcessTrusted() {
-                self.stopCursorFallbackPoll()
-                return
+            // 授权可能是运行途中才拿到的（用户去系统设置勾选）→ 自我收敛。
+            //
+            // ⚠️ 必须走 `refreshMouseMonitoring()`（重装）而不是只 `stopCursorFallbackPoll()`：
+            // 未授权时 `addGlobalMonitorForEvents` 返回的那个对象，在拿到授权后**不会**
+            // 自动开始派发事件。光关轮询而留着旧监视器，命中裁决就再也没人驱动了 ——
+            // 分区始终停在 ignoresMouseEvents 上，表现是「整个应用点不动」。
+            if AXIsProcessTrusted() {
+                self.refreshMouseMonitoring()
+                // 重装成功 ⇒ 轮询已被关掉（cursorPollWork 置 nil）⇒ 下面的 guard 会自然退出；
+                // 若授权为真但监视器装不上，轮询必须继续顶着，否则同样点不动。
+                guard self.cursorPollWork != nil else { return }
             }
             self.scheduleCursorPoll(changed ? Self.cursorPollActive : Self.cursorPollIdle)
         }
