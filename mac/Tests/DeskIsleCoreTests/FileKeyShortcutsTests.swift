@@ -15,6 +15,7 @@ final class FileKeyShortcutsTests: XCTestCase {
         XCTAssertEqual(FileKeyShortcuts.key(fromName: "a"), .a)
         XCTAssertEqual(FileKeyShortcuts.key(fromName: "A"), .a, "大小写不敏感：⌘⇧A 与 ⌘A 是同一个键")
         XCTAssertEqual(FileKeyShortcuts.key(fromName: "v"), .v)
+        XCTAssertEqual(FileKeyShortcuts.key(fromName: "z"), .z)
         XCTAssertEqual(FileKeyShortcuts.key(fromName: " "), .space)
         XCTAssertEqual(FileKeyShortcuts.key(fromName: "Space"), .space)
         XCTAssertEqual(FileKeyShortcuts.key(fromName: "escape"), .escape)
@@ -58,6 +59,17 @@ final class FileKeyShortcutsTests: XCTestCase {
         XCTAssertEqual(FileKeyShortcuts.action(for: .v, primary: true,  selectedCount: 0, layout: .mac), .paste)
         XCTAssertEqual(FileKeyShortcuts.action(for: .v, primary: true,  selectedCount: 3, layout: .mac), .paste)
         XCTAssertEqual(FileKeyShortcuts.action(for: .v, primary: false, selectedCount: 0, layout: .pc), .none)
+    }
+
+    // MARK: - 撤销
+
+    func testUndoDoesNotDependOnSelection() {
+        // 撤销的是「上一次操作」，不是「选中的东西」—— 所以跟选区无关。
+        XCTAssertEqual(FileKeyShortcuts.action(for: .z, primary: true,  selectedCount: 0, layout: .mac), .undo)
+        XCTAssertEqual(FileKeyShortcuts.action(for: .z, primary: true,  selectedCount: 3, layout: .pc),  .undo)
+        XCTAssertEqual(FileKeyShortcuts.action(for: .z, primary: false, selectedCount: 3, layout: .mac), .none)
+        XCTAssertEqual(FileKeyShortcuts.action(for: .z, primary: true, shift: true, selectedCount: 1, layout: .mac), .none,
+                       "⌘⇧Z 是「重做」一类别的意图，语义相反，绝不接管")
     }
 
     // MARK: - 删除：mac 与 pc 的键位习惯不同

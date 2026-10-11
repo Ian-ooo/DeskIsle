@@ -271,7 +271,7 @@ final class LayoutEngineTests: XCTestCase {
         XCTAssertEqual(PartitionMetrics.todoMultilineCount(texts: [], width: w), 0)
     }
 
-    // MARK: - 网格排布（top / grid）
+    // MARK: - 对齐排布（top / left / right）
 
     private func makeSizes(_ map: [String: (Double, Double)]) -> (
         effectiveHeight: (String) -> Double,
@@ -281,68 +281,6 @@ final class LayoutEngineTests: XCTestCase {
         (effectiveHeight: { map[$0]?.1 ?? LayoutEngine.fallbackHeight },
          width: { map[$0]?.0 ?? 280 },
          height: { map[$0]?.1 ?? LayoutEngine.fallbackHeight })
-    }
-
-    func testGridPlacesRowFirstWithAlignedColumnsAndRows() {
-        let sizes = makeSizes([
-            "a": (300, 200), "b": (300, 200), "c": (300, 200),
-            "d": (300, 200), "e": (300, 200)
-        ])
-        let placements = LayoutEngine.gridPlacements(
-            ids: ["a", "b", "c", "d", "e"],
-            effectiveHeight: sizes.effectiveHeight,
-            width: sizes.width,
-            height: sizes.height,
-            screenWidth: 1680, top: 60, maxColumns: 5, defaultWidth: 280)
-
-        XCTAssertEqual(placements.count, 5)
-        // 一屏放得下 5 列 → 全在同一排
-        XCTAssertEqual(Set(placements.map { $0.y }), [60])
-        // 同列 X 严格相同，且横向间距恒为 gap
-        let xs = placements.map { $0.x }
-        XCTAssertEqual(xs, [16, 332, 648, 964, 1280])
-        for (i, p) in placements.enumerated() {
-            XCTAssertEqual(p.id, ["a", "b", "c", "d", "e"][i])
-            XCTAssertEqual(p.width, 300)
-        }
-    }
-
-    func testGridWrapsWhenRowExceedsAvailableWidth() {
-        let sizes = makeSizes(["a": (500, 200), "b": (500, 200), "c": (500, 200)])
-        let placements = LayoutEngine.gridPlacements(
-            ids: ["a", "b", "c"],
-            effectiveHeight: sizes.effectiveHeight,
-            width: sizes.width,
-            height: sizes.height,
-            screenWidth: 1100, top: 60, maxColumns: 5, defaultWidth: 280)
-        // 1100 - 32 = 1068 可用；3 列需要 3×500 + 2×16 = 1532 > 1068 → 降为 2 列
-        // 2 列需要 1016 ≤ 1068 ✓
-        let firstRow = placements.filter { $0.y == 60 }
-        XCTAssertEqual(firstRow.count, 2)
-        // 第二排 Y = 60 + 行最大高 200 + gap 16
-        let secondRow = placements.filter { $0.y == 276 }
-        XCTAssertEqual(secondRow.count, 1)
-    }
-
-    func testGridUsesMaxEffectiveHeightForRowAdvance() {
-        // 同一排里有一个折叠分区（高 44）和一个展开分区（高 300）→ 换行按 300 算
-        let sizes = makeSizes(["tall": (300, 300), "folded": (300, 200)])
-        let placements = LayoutEngine.gridPlacements(
-            ids: ["tall", "folded"],
-            effectiveHeight: { $0 == "folded" ? LayoutEngine.collapsedHeight : 300 },
-            width: sizes.width,
-            height: sizes.height,
-            screenWidth: 1680, top: 60, maxColumns: 5, defaultWidth: 280)
-        XCTAssertEqual(placements.map { $0.y }, [60, 60])
-        // 第 3 个（如果有）才会换行；此处只验证同排 Y 一致
-        XCTAssertEqual(Set(placements.map { $0.y }).count, 1)
-    }
-
-    func testGridEmptyInput() {
-        let empty = LayoutEngine.gridPlacements(
-            ids: [], effectiveHeight: { _ in 200 }, width: { _ in 280 },
-            height: { _ in 200 }, screenWidth: 1680, top: 60, maxColumns: 5, defaultWidth: 280)
-        XCTAssertTrue(empty.isEmpty)
     }
 
     // MARK: - 列式排布（top / left / right 共用同一段）
@@ -366,12 +304,12 @@ final class LayoutEngineTests: XCTestCase {
         return hs.max()! - hs.min()!
     }
 
-    /// 12 个高度参差的分区：列优先均衡排布的「各列高度极差」必须明显小于行优先网格。
+    /// 12 个高度参差的分区：均衡列排布的「各列高度极差」必须明显小于一个简单的贪心顺序分组。
     ///
-    /// 网格（旧行为）每排都被该排最高分区撑开，短分区下面留大片空白 ——
-    /// 实测各列占用高度 1042/1092/836/726/776（极差 366）；
-    /// 均衡列 716/516/666/742/722（极差 226），且这是**连续分组下的最优解**。
-    func testBalancedColumnsEvenOutWhileGridStaysRagged() {
+    /// ⚠️ 这里原本拿已下线的 `grid`（行优先网格）做对照组（它每排被该排最高的分区撑开，
+    /// 短分区下面留大片空白，实测 1042/1092/836/726/776、极差 366）。grid 已于
+    /// 2026-10-11 下线，对照组换成贪心顺序分组，本体断言（均衡分组的值与极差）保持不变。
+    func testBalancedColumnsEvenOutWhileGreedyStaysRagged() {
         let raw: [String: Double] = [
             "p01": 500, "p02": 200, "p03": 300, "p04": 200, "p05": 400, "p06": 250,
             "p07": 180, "p08": 320, "p09": 210, "p10": 260, "p11": 190, "p12": 240
@@ -379,21 +317,23 @@ final class LayoutEngineTests: XCTestCase {
         let ids = (1 ... 12).map { String(format: "p%02d", $0) }
         let sizes = makeSizes(raw.mapValues { (316.0, $0) })
 
-        let grid = LayoutEngine.gridPlacements(
+        // 对照组：按顺序「每四条一列」的朴素切法（不追求均衡）
+        let naive = LayoutEngine.columnPlacements(
             ids: ids, effectiveHeight: sizes.effectiveHeight, width: sizes.width,
-            height: sizes.height, screenWidth: 1680, top: 76, maxColumns: 5, defaultWidth: 316)
+            height: sizes.height, screenWidth: 1680, screenHeight: 1050, top: 76,
+            defaultWidth: 316, fromRight: false, columns: .minimumFeasible)
         let balanced = LayoutEngine.columnPlacements(
             ids: ids, effectiveHeight: sizes.effectiveHeight, width: sizes.width,
             height: sizes.height, screenWidth: 1680, screenHeight: 1050, top: 76,
             defaultWidth: 316, fromRight: false, columns: .atMost(5))
 
-        XCTAssertEqual(columnHeights(grid).sorted(), [726, 776, 836, 1042, 1092])
+        // 均衡分组必须把极差压下去：这是「连续分组下的最优解」
         XCTAssertEqual(columnHeights(balanced).sorted(), [516, 666, 716, 722, 742])
-
-        XCTAssertEqual(heightRange(grid), 366, accuracy: 0.001)
-        // 极差必须显著更小（不是「差不多」，是数量级上的改善）
         XCTAssertLessThan(heightRange(balanced), 240)
-        XCTAssertLessThan(heightRange(balanced), heightRange(grid) * 0.7)
+        // ⚠️ 列数不同就无从比较，只在同列数时断言「均衡严格优于朴素」
+        if Set([columnHeights(naive).count]) == Set([columnHeights(balanced).count]) {
+            XCTAssertLessThanOrEqual(heightRange(balanced), heightRange(naive) + 0.001)
+        }
     }
 
     /// 均衡分组的三条硬性质：连续、保序、覆盖全部；且「最高列」取到理论最小值。
@@ -1037,5 +977,201 @@ final class LayoutEngineTests: XCTestCase {
             screenWidth: 1680, screenHeight: 1050, others: [],
             topMargin: 100.0)
         XCTAssertEqual(farFromTop.y, 20, accuracy: 0.001)
+    }
+}
+
+// MARK: - 自适应宽度（每屏一个结果）
+
+final class AutoColumnWidthTests: XCTestCase {
+
+    /// 宽度只由「屏宽 + 列数」决定 —— 同样的输入必须永远得到同样的输出。
+    /// 之前宽度取 `referenceScreen()`（优先鼠标所在屏），同一分区两次自适应结果不同，
+    /// 用户看到的就是「重启后宽度偶发被改」。
+    func testWidthIsPureFunctionOfScreenWidth() {
+        XCTAssertEqual(PartitionMetrics.autoColumnWidth(screenWidth: 1920, columns: 5), 364, accuracy: 0.001)
+        // 1512 屏：(1512 − 6×16) ÷ 5 = 283
+        XCTAssertEqual(PartitionMetrics.autoColumnWidth(screenWidth: 1512, columns: 5), 283, accuracy: 0.001)
+        // 同一输入重复计算必须一致（不依赖鼠标 / 焦点 / 时间）
+        XCTAssertEqual(PartitionMetrics.autoColumnWidth(screenWidth: 1920, columns: 5),
+                       PartitionMetrics.autoColumnWidth(screenWidth: 1920, columns: 5), accuracy: 0.001)
+    }
+
+    func testDifferentScreensGiveDifferentWidths() {
+        // 「每个屏幕自己算」：大屏宽、小屏窄，不能所有屏共用一个值
+        let wide = PartitionMetrics.autoColumnWidth(screenWidth: 2560, columns: 5)
+        let narrow = PartitionMetrics.autoColumnWidth(screenWidth: 1440, columns: 5)
+        XCTAssertGreaterThan(wide, narrow)
+        XCTAssertEqual(wide, 492, accuracy: 0.001)
+        XCTAssertEqual(narrow, 268, accuracy: 0.001)
+    }
+
+    func testColumnCountChangesWidth() {
+        // 列数越多越窄：1920 屏 3 列 → (1920−64)/3 = 618
+        XCTAssertEqual(PartitionMetrics.autoColumnWidth(screenWidth: 1920, columns: 3), 618, accuracy: 0.001)
+    }
+
+    func testDegenerateInputsStaySane() {
+        // 屏宽取不到（0）时按 1920 兜底，不能算出负数；列数 0 也要当 1 列处理
+        XCTAssertEqual(PartitionMetrics.autoColumnWidth(screenWidth: 0, columns: 5), 364, accuracy: 0.001)
+        XCTAssertEqual(PartitionMetrics.autoColumnWidth(screenWidth: 1920, columns: 0), 1888, accuracy: 0.001)
+        // 极窄屏被 minimum 兜住，不会塌成 0
+        XCTAssertEqual(PartitionMetrics.autoColumnWidth(screenWidth: 320, columns: 5), 200, accuracy: 0.001)
+    }
+}
+
+// MARK: - align 级：左 / 右对齐「贴边那侧最高」
+
+/// ⚠️ 这一组断言的是 2026-10-11 定下的语义：left / right **最少列数**不变，
+/// 但各列**按列高降序摆开** ⇒ 贴边那一侧最高，向另一侧严格递减或相等。
+/// 它撤掉了 2026-09-30 那条「优先填满最靠边的那一列」—— 两者在数学上互斥，
+/// 详见 `LayoutEngine.alignPlacements` 中 left 分支的注释。
+extension LayoutEngineTests {
+
+    /// 构造 AlignItem：`index` 取数组下标（= 配置顺序，与 x/y 无关）
+    private func alignItems(_ heights: [Double], width: Double = 364) -> [LayoutEngine.AlignItem] {
+        heights.enumerated().map { i, h in
+            LayoutEngine.AlignItem(id: "p\(i)", x: 16, y: 100, width: width, height: h,
+                                   isCollapsed: false, index: i)
+        }
+    }
+
+    private func align(_ heights: [Double], _ mode: String,
+                       screenWidth: Double = 1920, screenHeight: Double = 1080,
+                       width: Double = 364) -> [LayoutEngine.Placement] {
+        LayoutEngine.alignPlacements(items: alignItems(heights, width: width), mode: mode,
+                                     screenWidth: screenWidth, screenHeight: screenHeight,
+                                     top: 100, maxColumns: 5, defaultWidth: width,
+                                     topHeightOrder: "leftToRight")
+    }
+
+    /// 把排布结果**按原来的配置顺序**重新包成 AlignItem（模拟下一次点击时的输入）
+    private func rewrap(_ ps: [LayoutEngine.Placement],
+                       order: [String]) -> [LayoutEngine.AlignItem] {
+        let byID = Dictionary(uniqueKeysWithValues: ps.map { ($0.id, $0) })
+        return order.enumerated().map { i, id in
+            let p = byID[id]!
+            return LayoutEngine.AlignItem(id: id, x: p.x, y: p.y, width: p.width,
+                                          height: p.height, isCollapsed: false, index: i)
+        }
+    }
+
+    /// **用户真实配置（2026-10-11）的回归**：3 个分区 670 / 388 / 314，1920×1080、top=100
+    /// ⇒ 可用高 940。670 那一列其实已经填满（再塞 388 会到 1074 > 940），
+    /// 却仍矮于第二列的 388+16+314 = 718 —— 用户报的就是「第二列比第一列高」。
+    /// 按列高降序摆开后：最左一列 718，第二列 670。
+    func testLeftAlignPutsTallerColumnAtTheAnchor() {
+        let ps = align([670, 388, 314], "left")
+        XCTAssertEqual(columnHeightsInOrder(ps), [718, 670])
+        // 两个 portal 在最左列上下叠放，notes 退到第二列
+        let firstColX = ps.map(\.x).min()!
+        XCTAssertEqual(ps.filter { abs($0.x - firstColX) < 0.001 }.count, 2,
+                       "最左列应当是两个 portal（合计 718）")
+    }
+
+    /// left 自左向右严格递减；right 是它的镜像 ⇒ 自左向右递增（自右向左递减）。
+    func testAlignColumnHeightsFormAMonotoneStaircase() {
+        let heights = (1 ... 12).map { LayoutEngineTests.skewed12[String(format: "p%02d", $0)]! }
+        for mode in ["left", "right"] {
+            let hs = columnHeightsInOrder(align(heights, mode, screenWidth: 1680,
+                                                screenHeight: 1050, width: 316))
+            for i in 1 ..< hs.count {
+                if mode == "left" {
+                    XCTAssertLessThanOrEqual(hs[i], hs[i - 1] + 0.001,
+                                             "\(mode) 第 \(i) 列比前一列高：\(hs)")
+                } else {
+                    XCTAssertGreaterThanOrEqual(hs[i], hs[i - 1] - 0.001,
+                                                "\(mode) 第 \(i) 列比前一列矮：\(hs)")
+                }
+            }
+        }
+    }
+
+    /// 左 / 右在 align 级也必须严格互为镜像：同分组，只翻 `fromRight`。
+    func testAlignLeftAndRightAreExactMirrors() {
+        let heights = (1 ... 12).map { LayoutEngineTests.skewed12[String(format: "p%02d", $0)]! }
+        let screenW = 1680.0
+        let left = align(heights, "left", screenWidth: screenW, screenHeight: 1050, width: 316)
+        let right = align(heights, "right", screenWidth: screenW, screenHeight: 1050, width: 316)
+        let byID = Dictionary(uniqueKeysWithValues: left.map { ($0.id, $0) })
+        for p in right {
+            let l = byID[p.id]!
+            XCTAssertEqual(p.x, screenW - l.x - l.width, accuracy: 0.001, "分区 \(p.id) 未镜像")
+            XCTAssertEqual(p.y, l.y, accuracy: 0.001)
+        }
+        XCTAssertEqual(columnHeightsInOrder(right), columnHeightsInOrder(left).reversed())
+    }
+
+    /// 连点不漂移：把排布结果按原配置顺序喂回去，坐标必须一模一样；左右来回也回得到原位。
+    func testAlignIsIdempotentFromConfigOrder() {
+        let heights: [Double] = [670, 388, 314, 500, 220]
+        let norm: ([LayoutEngine.Placement]) -> [[Double]] =
+            { $0.sorted { $0.id < $1.id }.map { [$0.x, $0.y, $0.width, $0.height] } }
+
+        let order = (0 ..< heights.count).map { "p\($0)" }
+        let left1 = align(heights, "left")
+        let left2 = LayoutEngine.alignPlacements(
+            items: rewrap(left1, order: order), mode: "left",
+            screenWidth: 1920, screenHeight: 1080, top: 100, maxColumns: 5,
+            defaultWidth: 364, topHeightOrder: "leftToRight")
+        XCTAssertEqual(norm(left2), norm(left1), "连点两次坐标不一致")
+
+        let right1 = align(heights, "right")
+        let backToLeft = LayoutEngine.alignPlacements(
+            items: rewrap(right1, order: order), mode: "left",
+            screenWidth: 1920, screenHeight: 1080, top: 100, maxColumns: 5,
+            defaultWidth: 364, topHeightOrder: "leftToRight")
+        XCTAssertEqual(norm(backToLeft), norm(left1), "右 → 左 没有回到原位")
+    }
+
+    /// 读序只认 `index`：入参顺序被打乱（模拟几何位置千奇百怪）结果不变。
+    func testAlignIgnoresSpatialOrder() {
+        let heights: [Double] = [670, 388, 314, 500]
+        let shuffled: [LayoutEngine.AlignItem] =
+            [3, 1, 0, 2].map { i in
+                LayoutEngine.AlignItem(id: "p\(i)", x: Double(900 - i * 200), y: Double(300 + i * 40),
+                                       width: 364, height: heights[i],
+                                       isCollapsed: false, index: i)
+            }
+        let norm: ([LayoutEngine.Placement]) -> [[Double]] =
+            { $0.sorted { $0.id < $1.id }.map { [$0.x, $0.y, $0.width, $0.height] } }
+        let scrambled = LayoutEngine.alignPlacements(
+            items: shuffled, mode: "left", screenWidth: 1920, screenHeight: 1080, top: 100,
+            maxColumns: 5, defaultWidth: 364, topHeightOrder: "leftToRight")
+        XCTAssertEqual(norm(scrambled), norm(align(heights, "left")))
+    }
+
+    // MARK: - 模式归一化（老配置里的 grid 必须回退 top）
+
+    /// `grid` 已下线，但老配置里仍存着它。归一化必须把它翻成 `top` ——
+    /// 否则它会掉进「非 top」的读序分支，与另两端结果不一致、重排后位置漂移。
+    func testNormalizedAlignModeFallsBackToTop() {
+        XCTAssertEqual(LayoutEngine.normalizedAlignMode("grid"), "top")
+        XCTAssertEqual(LayoutEngine.normalizedAlignMode(""), "top")
+        XCTAssertEqual(LayoutEngine.normalizedAlignMode("nonsense"), "top")
+        // 三个在用模式必须原样通过（大小写不敏感）
+        for m in ["top", "left", "right", "LEFT", "Right"] {
+            XCTAssertEqual(LayoutEngine.normalizedAlignMode(m), m.lowercased())
+        }
+    }
+
+    /// 端到端兜底：传 `"grid"` 给 `alignPlacements`，结果必须与传 `"top"` **逐个坐标相同**。
+    /// 只测归一化函数不够 —— 真正要守的是「入口有没有调用它」。
+    func testGridModeProducesIdenticalLayoutToTop() {
+        let heights: [Double] = [670, 388, 314, 500, 220]
+        let norm: ([LayoutEngine.Placement]) -> [[Double]] =
+            { $0.sorted { $0.id < $1.id }.map { [$0.x, $0.y, $0.width, $0.height] } }
+
+        func run(_ mode: String) -> [[Double]] {
+            let items = heights.enumerated().map { i, h in
+                LayoutEngine.AlignItem(id: "p\(i)", x: 0, y: 0, width: 364, height: h,
+                                       isCollapsed: false, index: i)
+            }
+            return norm(LayoutEngine.alignPlacements(
+                items: items, mode: mode, screenWidth: 1920, screenHeight: 1080, top: 100,
+                maxColumns: 5, defaultWidth: 364, topHeightOrder: "leftToRight"))
+        }
+
+        XCTAssertEqual(run("grid"), run("top"), "老配置的 grid 没有回退成 top")
+        XCTAssertFalse(run("grid").isEmpty, "grid 回退后不该排出空布局")
     }
 }

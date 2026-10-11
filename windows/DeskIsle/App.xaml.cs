@@ -37,7 +37,7 @@ namespace DeskIsle
         /// 来反推自己锁没锁 —— 纯负反馈。菜单每次打开都按当前配置重新同步。
         /// </summary>
         private ToolStripMenuItem? _lockMenuItem;
-        /// <summary>「分区排版对齐」子菜单里的四个模式项，键 = 模式名（top/left/right/grid）。</summary>
+        /// <summary>「分区排版对齐」子菜单里的三个模式项，键 = 模式名（top/left/right）。</summary>
         private readonly Dictionary<string, ToolStripMenuItem> _alignModeItems = new();
         private HotKeyManager? _hotKeyManager;
         /// <summary>承载全局热键的专用消息窗口（**不是**某个顶栏，见 <see cref="InitHotKey"/>）。</summary>
@@ -254,7 +254,7 @@ namespace DeskIsle
             foreach (var (mode, label) in new[]
                      {
                          ("top", "顶部横向排序"), ("left", "左侧纵向对齐"),
-                         ("right", "右侧纵向对齐"), ("grid", "网格平铺自适应")
+                         ("right", "右侧纵向对齐")
                      })
             {
                 var m = mode;
@@ -335,7 +335,7 @@ namespace DeskIsle
         }
 
         /// <summary>
-        /// 给四个对齐模式项打 ✓（与 mac 托盘一致：当前模式那一项显示勾选）。
+        /// 给三个对齐模式项打 ✓（与 mac 托盘一致：当前模式那一项显示勾选）。
         /// 勾的是**光标所在屏**的模式 —— 每屏各自一套，多屏下光看勾也能知道这块屏用的哪种。
         /// </summary>
         private void RefreshAlignMenuChecks()
@@ -724,9 +724,10 @@ namespace DeskIsle
 
         private static string AlignModeLabel(string? mode) => mode switch
         {
+            // ⚠️ 曾经的 "grid"（网格平铺）已下线，与 top 差异极小；
+            // 老配置里存着的 grid 由 LayoutEngine 的 default 分支自动回退成 top。
             "left" => "左侧",
             "right" => "右侧",
-            "grid" => "网格",
             _ => "顶部"
         };
 

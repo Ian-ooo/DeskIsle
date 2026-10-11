@@ -6,7 +6,6 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Controls;
-using System.Windows.Documents;
 using DeskIsle.Controls;
 using DeskIsle.Models;
 using DeskIsle.Native;
@@ -23,7 +22,7 @@ namespace DeskIsle.Views
         /// 可拖着窗口走的标题栏条带高度（与 mac 基线的 <c>PartitionMetrics.headerHeight</c> 对齐）。
         /// 内容区一律不拖 —— 否则会抢走分区内条目的拖拽（把文件拖出去）与文本选择。
         /// </summary>
-        private const double HeaderDragHeight = 44;
+        private const double HeaderDragHeight = PartitionMetrics.HeaderHeight;
 
         /// <summary>
         /// 锁定态下「暂时用不上」的按钮压暗到这个不透明度。
@@ -109,7 +108,7 @@ namespace DeskIsle.Views
             Left = model.X;
             Top = model.Y;
             Width = model.Width > 0 ? model.Width : LayoutEngine.DefaultPartitionWidth;
-            Height = model.IsCollapsed ? 44 : (model.Height > 0 ? model.Height : 200);
+            Height = model.IsCollapsed ? PartitionMetrics.HeaderHeight : (model.Height > 0 ? model.Height : 200);
 
             LoadContentView();
             ApplyCardBackground();              // 分区背景不透明度（全局设置）
@@ -498,7 +497,7 @@ namespace DeskIsle.Views
         {
             if (BlockedByLock(Model.IsCollapsed ? "展开" : "折叠")) return;
             Model.IsCollapsed = !Model.IsCollapsed;
-            Height = Model.IsCollapsed ? 44 : Math.Max(140.0, Model.Height);
+            Height = Model.IsCollapsed ? PartitionMetrics.HeaderHeight : Math.Max(140.0, Model.Height);
             ApplyMinHeight();
             AfterModelChanged();
         }
@@ -537,7 +536,7 @@ namespace DeskIsle.Views
         private void ApplyModelToWindow()
         {
             Width = Model.Width > 0 ? Model.Width : LayoutEngine.DefaultPartitionWidth;
-            Height = Model.IsCollapsed ? 44 : Math.Max(140.0, Model.Height);
+            Height = Model.IsCollapsed ? PartitionMetrics.HeaderHeight : Math.Max(140.0, Model.Height);
             ApplyMinHeight();
             UpdateWindowLevel();
             _config.Save();
@@ -549,7 +548,7 @@ namespace DeskIsle.Views
         /// </summary>
         public void ApplyCollapsedState()
         {
-            Height = Model.IsCollapsed ? 44 : Math.Max(140.0, Model.Height);
+            Height = Model.IsCollapsed ? PartitionMetrics.HeaderHeight : Math.Max(140.0, Model.Height);
             ApplyMinHeight();
             RefreshChrome();
         }
@@ -582,7 +581,7 @@ namespace DeskIsle.Views
         /// </summary>
         private void ApplyMinHeight()
         {
-            MinHeight = Model.IsCollapsed ? 44 : Math.Max(40.0, UserMinHeight());
+            MinHeight = Model.IsCollapsed ? PartitionMetrics.HeaderHeight : Math.Max(40.0, UserMinHeight());
         }
 
         /// <summary>模型变更后的统一收尾：落盘 + 通知宿主刷新顶栏与标题栏。</summary>
@@ -719,7 +718,7 @@ namespace DeskIsle.Views
             if (_isHoverPeeked)
             {
                 _isHoverPeeked = false;
-                Height = 44;
+                Height = PartitionMetrics.HeaderHeight;
                 ContentArea.Visibility = Visibility.Collapsed;
             }
         }
@@ -734,7 +733,7 @@ namespace DeskIsle.Views
                 if (_isHoverPeeked)
                 {
                     _isHoverPeeked = false;
-                    Height = 44;
+                    Height = PartitionMetrics.HeaderHeight;
                     ContentArea.Visibility = Visibility.Collapsed;
                     CollapseBtn.Content = "\uE70D";
                 }
@@ -788,7 +787,7 @@ namespace DeskIsle.Views
                 _isHoverPeeked = false;
                 if (Model.IsCollapsed)
                 {
-                    Height = 44;
+                    Height = PartitionMetrics.HeaderHeight;
                     ContentArea.Visibility = Visibility.Collapsed;
                     CollapseBtn.Content = "\uE70D";
                 }

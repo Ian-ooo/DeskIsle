@@ -8,15 +8,18 @@ namespace DeskIsle.Services
     /// <summary>
     /// 对齐排版的坐标解算（纯函数，不接触窗口 / 配置）。
     ///
-    /// 四种模式：
-    /// - <c>grid</c>  —— 网格平铺（**行优先**：先上排、同行左起）
+    /// 三种模式：
     /// - <c>top</c>   —— 顶部横向排序（**列优先 + 尽量多列**，整体最紧凑）
     /// - <c>left</c>  —— 左侧纵向对齐（**列优先 + 最少列数**，贴左）
     /// - <c>right</c> —— 右侧纵向对齐（同 left 的**严格几何镜像**，贴右）
     ///
-    /// ⚠️ **`top` / `left` / `right` 三种列式模式只在「列数怎么定」上分道扬镳**，
+    /// ⚠️ 曾经的第四种 <c>grid</c>（行优先网格平铺）已下线：它与 <c>top</c> 的排布差异极小
+    /// （都贴顶、都按列均分），却要多维护一套行优先分支。老配置里存着的 grid
+    /// 由 <see cref="NormalizeAlignMode"/> 归一化成 top。
+    ///
+    /// ⚠️ **三种列式模式只在「列数怎么定」上分道扬镳**，
     /// 其余（读序、均衡分组、列 X 计算、逐列自上而下摆放）完全共用。
-    /// 与 macOS `LayoutEngine` / Electron `layout.ts` 同源，改动务必三端同步。
+    /// 与 macOS `LayoutEngine` / Python crosscheck 同源，改动务必三端同步。
     /// </summary>
     public static class LayoutEngine
     {
@@ -297,27 +300,6 @@ namespace DeskIsle.Services
         }
 
         /// <summary>
-        /// 将一组分区按高度均衡切分到指定列数（保序、连续分组），使各列累计总高度的极差最小。
-        ///
-        /// 与旧实现（LPT 降序贪心 + 2-Opt 跨列移动/交换）的区别：那种做法会把条目**跨列重排**，
-        /// 结果里「先出现的条目」可能落在任意一列，读回顺序与原序不一致，重复点击会窜位。
-        /// 这里改成保序连续分组，重复点击是幂等的。
-        /// </summary>
-        public static List<List<string>> BalanceColumns(
-            List<string> items,
-            int numCols,
-            double gap,
-            Func<string, double> heightProvider,
-            double maxGroupHeight = double.PositiveInfinity,
-            ColumnHeightOrder order = ColumnHeightOrder.NonIncreasing)
-        {
-            var ranges = BalancedColumnRanges(
-                items.Count, numCols, gap, i => heightProvider(items[i]),
-                maxGroupHeight, order);
-            return ranges.Select(r => items.GetRange(r.Start, r.End - r.Start)).ToList();
-        }
-
-        /// <summary>
         /// 各列高度 = 列内条目高度之和 + 组内间隔（<c>(条数 − 1) × gap</c>）。
         /// 索引与 <paramref name="cols"/> 一一对应。
         /// </summary>
@@ -516,6 +498,20 @@ namespace DeskIsle.Services
         }
 
         /// <summary>
+        /// 排列模式归一化：未知 / 已下线的模式一律回退到 <c>top</c>。
+        /// <para>
+        /// 老配置里存着的 <c>grid</c> 必须在这里翻译成 <c>top</c>，否则会掉进非 top 的读序分支
+        /// （按几何位置排序），三端结果不一致、重排后位置会漂。
+        /// </para>
+        /// </summary>
+        public static string NormalizeAlignMode(string? mode)
+        {
+            string lower = (mode ?? string.Empty).ToLowerInvariant();
+            if (lower == "top" || lower == "left" || lower == "right") return lower;
+            return "top";
+        }
+
+        /// <summary>
         /// 计算指定排版模式下的所有分区坐标结果 (x, y)
         /// 不改变分区的宽度和高度！
         /// </summary>
@@ -539,142 +535,32 @@ namespace DeskIsle.Services
             double GetW(PartitionModel p) => p.Width > 0 ? p.Width : DefaultPartitionWidth;
 
             var partMap = partitions.ToDictionary(p => p.Id, p => p);
-            string lowerMode = mode.ToLowerInvariant();
+            string lowerMode = NormalizeAlignMode(mode);
 
             // ── 读序 ────────────────────────────────────────────────────────────
             //
-            // ⚠️ `left` / `right`：**读序由「当前布局贴哪一边」决定，与即将点击的模式无关。**
-            // 两者必须拿到**同一条序列**，分组才会一致，`fromRight` 的结果才是 `false` 的
-            // **严格几何镜像**；同时这也是幂等的前提（从「贴边那一侧」读回的序列正是上次排布
-            // 用过的序列）。
+            // ⚠️ **三个模式一律按配置顺序读**（partitions 数组顺序），不用几何位置排读序。
             //
-            // 旧实现：`right` 固定按「从右往左」读 → 等于把序列反过来重新分组 →
-            // 切出的列不是同一组（实测 7 分区：left 各列高 814/758/610，right 却成了 316/926/940）。
+            // 历史：`left` / `right` 曾按「当前布局贴靠哪一边」从几何反推读序（列优先、同列按 Y），
+            // 目的是让两向拿到同一条序列以保证镜像（更旧的 `right` 固定从右往左读 ⇒ 等于把序列
+            // 反过来重新分组 ⇒ 7 分区下 left 是 814/758/610、right 却是 316/926/940，两边对不上）。
             //
-            // ⚠️⚠️ `top`：它的列是**按列高降序排开**的（见 <see cref="SortColumnsByHeight"/>），
-            // 列的左右顺序不再承载读序信息，所以**固定取 partitions 数组顺序**（与布局无关的稳定来源）。
+            // ⚠️⚠️ 现在**三个模式都会把列按列高降序摆开**，落位后「列的空间顺序」不再承载读序信息。
             // 若还从布局几何推读序，读回来的就是「按列高排过序」的另一条序列，再分组必然切出
-            // 不同的列，连点会一路漂移。
-            List<string> sortedIds;
-            bool isColumnMode = lowerMode == "left" || lowerMode == "top" || lowerMode == "right";
-            if (isColumnMode)
-            {
-                if (lowerMode == "top")
-                {
-                    sortedIds = partitions.Select(p => p.Id).ToList();
-                }
-                else
-                {
-                    double minX = partitions.Min(p => p.X);
-                    double maxRight = partitions.Max(p => p.X + GetW(p));
-                    bool readFromRight = (screenWidth - Margin - maxRight) < (minX - Margin);
-
-                    var indexOf = new Dictionary<string, int>();
-                    for (int i = 0; i < partitions.Count; i++) indexOf[partitions[i].Id] = i;
-
-                    var sorted = new List<PartitionModel>(partitions);
-                    sorted.Sort((p1, p2) =>
-                    {
-                        if (Math.Abs(p1.X - p2.X) > 60)
-                            return readFromRight ? (p1.X > p2.X ? -1 : 1) : (p1.X < p2.X ? -1 : 1);
-                        if (Math.Abs(p1.Y - p2.Y) > 1)
-                            return p1.Y < p2.Y ? -1 : 1;
-                        return indexOf[p1.Id].CompareTo(indexOf[p2.Id]);
-                    });
-                    sortedIds = sorted.Select(p => p.Id).ToList();
-                }
-            }
-            else
-            {
-                // grid：行优先读序（上排在前，同排左侧在前）
-                var indexOf = new Dictionary<string, int>();
-                for (int i = 0; i < partitions.Count; i++) indexOf[partitions[i].Id] = i;
-                var sorted = new List<PartitionModel>(partitions);
-                sorted.Sort((p1, p2) =>
-                {
-                    if (Math.Abs(p1.Y - p2.Y) > 1)
-                        return p1.Y < p2.Y ? -1 : 1;
-                    if (Math.Abs(p1.X - p2.X) > 1)
-                        return p1.X < p2.X ? -1 : 1;
-                    return indexOf[p1.Id].CompareTo(indexOf[p2.Id]);
-                });
-                sortedIds = sorted.Select(p => p.Id).ToList();
-            }
-
-            if (!isColumnMode)
-            {
-                // ── grid：行优先网格 ──
-                // 1. 确定实际横排能够容纳的列数 numCols (1 ~ maxColumns)
-                // ⚠️ clamp 到 [4, 6] 必须与 mac `Config.maxColumns` / Electron inline clamp 一致
-                int numCols = Math.Max(1, Math.Min(sortedIds.Count, Math.Clamp(maxColumns, 4, 6)));
-                while (numCols > 1)
-                {
-                    double[] maxWInCols = new double[numCols];
-                    for (int idx = 0; idx < sortedIds.Count; idx++)
-                    {
-                        int c = idx % numCols;
-                        maxWInCols[c] = Math.Max(maxWInCols[c], GetW(partMap[sortedIds[idx]]));
-                    }
-                    double totalW = maxWInCols.Sum() + (numCols - 1) * Gap;
-                    if (totalW <= availW)
-                    {
-                        break;
-                    }
-                    numCols--;
-                }
-
-                // 2. 按行（Row-First）进行精准网格分配
-                List<List<string>> rows = new();
-                List<string> currentRow = new();
-                foreach (var id in sortedIds)
-                {
-                    currentRow.Add(id);
-                    if (currentRow.Count == numCols)
-                    {
-                        rows.Add(currentRow);
-                        currentRow = new();
-                    }
-                }
-                if (currentRow.Count > 0)
-                {
-                    rows.Add(currentRow);
-                }
-
-                // 3. 计算各列统一的 X 坐标 (每一列中所有分区 X 坐标严格相同)
-                double[] colWidths = new double[numCols];
-                for (int c = 0; c < numCols; c++)
-                {
-                    var colItems = rows.Where(r => c < r.Count).Select(r => r[c]).ToList();
-                    colWidths[c] = colItems.Select(id => GetW(partMap[id])).DefaultIfEmpty(DefaultPartitionWidth).Max();
-                }
-                double[] colX = new double[numCols];
-                colX[0] = Margin;
-                for (int c = 1; c < numCols; c++)
-                {
-                    colX[c] = colX[c - 1] + colWidths[c - 1] + Gap;
-                }
-
-                // 4. 按排计算统一的 Y 坐标 (同一排内所有分区 Y 坐标严格相同，排间以该排最大高度换行)
-                double curY = topMargin;
-                foreach (var rowItems in rows)
-                {
-                    double rowMaxH = rowItems.Select(id => GetEffH(partMap[id])).DefaultIfEmpty(FallbackHeight).Max();
-                    for (int c = 0; c < rowItems.Count; c++)
-                    {
-                        string id = rowItems[c];
-                        result[id] = (colX[c], curY);
-                    }
-                    curY += rowMaxH + Gap;
-                }
-                return result;
-            }
+            // 不同的列，连点会一路漂移（3 列的排布会掉成 2 列）。
+            // ⇒ 固定取配置顺序这个**与布局无关的稳定来源**：连点幂等，left / right 天然同源。
+            //
+            // ⚠️ 代价：手动拖动造成的视觉顺序不再影响分组（这正是「不被上一次排布牵着走」的代价）。
+            List<string> sortedIds = partitions.Select(p => p.Id).ToList();
 
             // ── 列式排布：top / left / right 共用 ──
             //
-            // top  ：尽量多列（再用可用宽度逐级夹）——整体最紧凑；落位前各列按列高降序摆开，
-            //        方向只决定整块贴左还是贴右；
+            // top  ：尽量多列（再用可用宽度逐级夹）——整体最紧凑；
             // left ：最少列数（每列刚好不超过可用高度），贴左；
             // right：与 left 同分组、同列数，整块贴右 —— **left 的严格几何镜像**。
+            //
+            // ⚠️ **三种模式都按列高降序摆开**（`sortColumnsByHeight` 恒为 true）：
+            // 保证 left「贴左那列最高、自左向右递减」，right 是其严格镜像（自右向左递减）。
             bool isTop = lowerMode == "top";
             ColumnCountMode countMode = isTop
                 ? ColumnCountMode.AtMost
@@ -692,7 +578,7 @@ namespace DeskIsle.Services
                 sortedIds, partMap, GetEffH, GetW,
                 screenWidth, availH, availW, topMargin,
                 fromRight, countMode, columnLimit,
-                sortColumnsByHeight: isTop);
+                sortColumnsByHeight: true);
 
             foreach (var kv in placements) result[kv.Key] = kv.Value;
             return result;

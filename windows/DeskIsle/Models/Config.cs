@@ -637,7 +637,9 @@ namespace DeskIsle.Models
                 return CustomPartitionWidth > 0 ? CustomPartitionWidth : 280.0;
             }
             int cols = MaxColumns;
-            double gap = 16.0;
+            // ⚠️ 间距必须引用 LayoutEngine.Gap —— SnappingManager 已明文要求复用，
+            // 这里自己写数值会让「排版间距」与「吸附间距」悄悄分叉。
+            double gap = LayoutEngine.Gap;
             double totalGaps = (cols + 1) * gap;
             double avail = screenWidth > 0 ? screenWidth : 1920.0;
             double calculated = Math.Floor((avail - totalGaps) / cols);

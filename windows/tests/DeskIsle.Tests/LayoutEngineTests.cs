@@ -31,7 +31,6 @@ namespace DeskIsle.Tests
         // ── 通用契约 ────────────────────────────────────────────
 
         [Theory]
-        [InlineData("grid")]
         [InlineData("top")]
         [InlineData("left")]
         [InlineData("right")]
@@ -50,13 +49,12 @@ namespace DeskIsle.Tests
         }
 
         [Theory]
-        [InlineData("grid")]
         [InlineData("top")]
         [InlineData("left")]
         [InlineData("right")]
         public void PlacementsNeverOverlap(string mode)
         {
-            // 四种模式都许 NK 出界（竖向超高时会到底），但**绝不能互相压住** ——
+            // 三种模式都允许出界（竖向超高时会到底），但**绝不能互相压住** ——
             // 重叠意味着「调皮算错了」，用户会看到两个分区糊在一起。
             var ps = OfHeights(316, 316, 480, 428, 610, 196, 288);
             var layout = LayoutEngine.CalculateLayout(mode, ps, ScreenW, ScreenH);
@@ -78,7 +76,6 @@ namespace DeskIsle.Tests
         }
 
         [Theory]
-        [InlineData("grid")]
         [InlineData("top")]
         [InlineData("left")]
         [InlineData("right")]
@@ -216,6 +213,66 @@ namespace DeskIsle.Tests
             var cols = new List<List<string>> { new List<string> { "a", "b", "c" } };
             var heights = LayoutEngine.ColumnHeightsOf(cols, _ => 100, LayoutEngine.Gap);
             Assert.Equal(100 * 3 + LayoutEngine.Gap * 2, heights[0], 6);
+        }
+
+        // ── 模式归一化（老配置里的 grid 必须回退 top）──────────────────────────
+
+        /// <summary>
+        /// <c>grid</c> 已下线，但老配置里仍存着它。归一化必须把它翻成 <c>top</c>，
+        /// 否则它会掉进非 top 的读序分支，与 Swift / Python 结果不一致、重排后位置漂移。
+        /// 本测试与 <c>mac/Tests/.../LayoutEngineTests.swift</c> 的同名用例一一对应。
+        /// </summary>
+        [Theory]
+        [InlineData("grid", "top")]
+        [InlineData("", "top")]
+        [InlineData("nonsense", "top")]
+        [InlineData("top", "top")]
+        [InlineData("left", "left")]
+        [InlineData("right", "right")]
+        [InlineData("LEFT", "left")]
+        [InlineData("Right", "right")]
+        public void NormalizeAlignMode_FallsBackToTop(string input, string expected)
+        {
+            Assert.Equal(expected, LayoutEngine.NormalizeAlignMode(input));
+        }
+
+        /// <summary>
+        /// 端到端兜底：传 "grid" 给 CalculateLayout，结果必须与传 "top" **逐个坐标相同**。
+        /// 只测归一化函数不够 —— 真正要守的是「入口有没有调用它」。
+        /// </summary>
+        [Fact]
+        public void CalculateLayout_GridMode_ProducesIdenticalLayoutToTop()
+        {
+            double[] heights = { 670, 388, 314, 500, 220 };
+            List<PartitionModel> Make()
+            {
+                var list = new List<PartitionModel>();
+                for (int i = 0; i < heights.Length; i++)
+                {
+                    list.Add(new PartitionModel
+                    {
+                        Id = "p" + i,
+                        X = 0,
+                        Y = 0,
+                        Width = 364,
+                        Height = heights[i],
+                        IsCollapsed = false,
+                    });
+                }
+                return list;
+            }
+
+            var byGrid = LayoutEngine.CalculateLayout("grid", Make(), 1920, 1080, 100, 40, 5, "leftToRight");
+            var byTop = LayoutEngine.CalculateLayout("top", Make(), 1920, 1080, 100, 40, 5, "leftToRight");
+
+            Assert.Equal(byTop.Count, byGrid.Count);
+            Assert.NotEmpty(byGrid);
+            foreach (var kv in byTop)
+            {
+                Assert.True(byGrid.ContainsKey(kv.Key), $"grid 回退后缺分区 {kv.Key}");
+                Assert.Equal(kv.Value.X, byGrid[kv.Key].X, 6);
+                Assert.Equal(kv.Value.Y, byGrid[kv.Key].Y, 6);
+            }
         }
     }
 }

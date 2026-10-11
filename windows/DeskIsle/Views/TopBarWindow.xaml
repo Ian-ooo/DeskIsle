@@ -125,8 +125,8 @@
                     <RadioButton x:Name="AlignLeftBtn" Style="{StaticResource AlignToggleBtnStyle}" Content="&#xE8E2;" ToolTip="左侧纵向高度均衡对齐" Click="AlignLeft_Click" Margin="0,0,2,0"/>
                     <!-- Right Vertical: &#xE8E3; -->
                     <RadioButton x:Name="AlignRightBtn" Style="{StaticResource AlignToggleBtnStyle}" Content="&#xE8E3;" ToolTip="右侧纵向高度均衡对齐" Click="AlignRight_Click" Margin="0,0,2,0"/>
-                    <!-- Grid: &#xE80A; -->
-                    <RadioButton x:Name="AlignGridBtn" Style="{StaticResource AlignToggleBtnStyle}" Content="&#xE80A;" ToolTip="网格规整排列" Click="AlignGrid_Click"/>
+                    <!-- ⚠️ 曾经的「网格规整排列」（&#xE80A; / AlignGridBtn）已于 2026-10-11 下线：
+                         它与「顶部横向排序」的排布差异极小，UI 入口一并移除。 -->
 
                     <Rectangle Width="1" Height="16" Fill="#20FFFFFF" Margin="6,0,6,0"/>
 

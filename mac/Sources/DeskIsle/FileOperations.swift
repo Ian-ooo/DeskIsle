@@ -1,4 +1,5 @@
 import AppKit
+import Carbon        // kVK_* 键码常量：fileKeyName 按键码认特殊键（数值无规律，必须用符号）
 import DeskIsleCore
 
 // MARK: - 文件操作：键盘意图的执行层
@@ -18,6 +19,102 @@ struct FileOpContext {
 
 extension AppDelegate {
 
+    // MARK: 键盘路由
+
+    /// 应用级 keyDown 监视器 —— 文件快捷键的**统一入口**。
+    ///
+    /// ⚠️ 为什么必须放在这一层，而不是只写在 `PartitionPanel.sendEvent` 里：
+    /// 那个分支**只在分区是 key window 时**才会被调用。而分区是 `.nonactivatingPanel`，
+    /// key window 的归属随时会被 AppKit 重新安排（实测 `NSApp.activate` 之后常常落到顶栏
+    /// `TopBarPanel`，而不是用户刚点过的那个分区），一旦丢掉 key，`sendEvent` 一条 keyDown
+    /// 都收不到 —— 用户看到的就是「分区里的快捷键一个都不起作用」。
+    /// `addLocalMonitorForEvents` 监视的是**发给本应用**的事件，与窗口的 key 状态无关，
+    /// 所以这一层才是稳的入口（`PartitionPanel.sendEvent` 里的分支因此废弃）。
+    func installFileKeyRouting() {
+        guard fileKeyMonitor == nil else { return }
+        fileKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  // 模态（设置 / 搜索）开着时，键盘全归它，这里不要抢。
+                  !self.isModalOpen,
+                  let target = self.keyTargetPanel(for: event),
+                  !self.isTextInputActive(in: target.partitionID),
+                  self.handleFileKey(partitionID: target.partitionID, event: event)
+            else { return event }
+            return nil   // 已被文件列表消费，不再往下派发
+        }
+    }
+
+    /// 这一下按键该由哪个分区来解读 —— 只认「用户正在操作的那个」。
+    ///
+    /// 事件携带的 window 是**真实接收它的窗口**；key window 次之（分区在非激活面板下
+    /// 有时拿不到 key，靠这条兜住）。两条都空就说明按键不属于任何分区，
+    /// 原样放行（`nil` → 交给 AppKit）。
+    private func keyTargetPanel(for event: NSEvent) -> PartitionPanel? {
+        if let w = event.window as? PartitionPanel { return w }
+        if let k = NSApp.keyWindow as? PartitionPanel { return k }
+        return nil
+    }
+
+    /// 该分区当前是否正在编辑文本（搜索框 / 便签），此时键盘必须让给输入控件。
+    ///
+    /// ⚠️ 为什么不能只看 `firstResponder`：`.nonactivatingPanel` 里 SwiftUI 的 TextField
+    /// **不会因为点了别处而 resign**（这条注释的原作者在 `PartitionView` 里也踩过），
+    /// 于是「用户点过搜索框之后」firstResponder 会一直是那个 field editor ——
+    /// 判据恒为真，文件快捷键从此**永久失效**。所以主判据改用 SwiftUI `@FocusState`
+    /// 明确上报的信号（`setPortalTextFocus`），firstResponder 只作为
+    /// 便签这类**原生文本视图**的兜底。
+    func isTextInputActive(in id: String) -> Bool {
+        if portalTextFocus.contains(id) { return true }
+        // ⚠️ portal 分区到此为止。它的文本输入（搜索框）有精确的 SwiftUI 焦点信号，
+        // 而 firstResponder 在 nonactivatingPanel 下会**残留**（点别处也不 resign），
+        // 一旦在这里接着看它，就会把「点过一次搜索框」之后的快捷键永久判成「正在打字」。
+        // 便签这类**原生**文本视图没有信号可用，才走下面的 firstResponder 兜底。
+        let type = config.str("type", of: id) ?? ""
+        guard !type.isEmpty, type != "portal" else { return false }
+        guard let panel = panel(for: id), panel.isKeyWindow else { return false }
+        if let tv = panel.firstResponder as? NSTextView, tv.isEditable { return true }
+        return false
+    }
+
+    /// SearchField 的焦点变化上报（`portalTextFocus` 的写入口之一）。
+    func setPortalTextFocus(_ id: String, active: Bool) {
+        if active { portalTextFocus.insert(id) } else { portalTextFocus.remove(id) }
+    }
+
+    /// 用户点了输入框以外的地方 —— 让搜索框**真正**放弃焦点。
+    ///
+    /// ⚠️ 为什么不能等 SwiftUI 自己来：分区是 `.nonactivatingPanel`，实测**点击文件列表
+    /// 不会让搜索框的 `@FocusState` 变回 false**（AppKit 的 field editor 也不 resign）。
+    /// 于是「点过一次搜索框」之后 `isTextInputActive` 恒为真，
+    /// ⌘X / ⌘C / ⌘V / ⌘Z 从此**全部失效** —— 这正是用户报的现象。
+    /// 所以焦点释放必须由**真实点击位置**驱动，而不是指望框架的通知。
+    ///
+    /// - Parameter locationInWindow: 点击落在窗口坐标系的位置（`NSEvent.locationInWindow`）。
+    func releaseTextFocusIfNeeded(in panel: PartitionPanel, clickAt locationInWindow: NSPoint) {
+        let id = panel.partitionID
+        // 没在输入态就没什么要放的；点在输入框**里面**也要留住（用户还要打字）。
+        guard portalTextFocus.contains(id) else { return }
+        if let hit = panel.contentView?.hitTest(locationInWindow), Self.isTextInputView(hit) { return }
+
+        portalTextFocus.remove(id)
+        panel.makeFirstResponder(nil)
+        // SwiftUI 侧也要同步，否则 `@FocusState` 仍是 true，
+        // 下次再点搜索框不会触发 onChange，焦点信号就再也回不来了。
+        NotificationCenter.default.post(name: .portalResignTextFocus, object: id)
+    }
+
+    /// 该视图（或其祖先）是不是文本输入控件。
+    /// SwiftUI 的 TextField 底层是 `AppKitTextField`（`NSTextField` 子类），点上去命中的是它或其容器，
+    /// 所以要沿父链找，不能只比较 hit 本身的类型。
+    static func isTextInputView(_ view: NSView) -> Bool {
+        var cur: NSView? = view
+        while let v = cur {
+            if v is NSTextField || v is NSTextView { return true }
+            cur = v.superview
+        }
+        return false
+    }
+
     // MARK: 上下文上报
 
     /// PortalView 在选区 / 可见集合 / 目录变化时调用。
@@ -36,16 +133,26 @@ extension AppDelegate {
     /// ⚠️ 特殊键**没有**可读字符（Escape / 方向键 / F2 的 `characters` 里是私有区码点），
     /// 必须按 keyCode 单独认；其余走 `charactersIgnoringModifiers` —— 它已经剥掉了
     /// ⌘ / ⇧，所以 ⌘A 拿到的是 `"a"` 而不是带修饰的组合。
+    ///
+    /// ⚠️⚠️ 键码**必须写注释标明出处**，因为它们是一串无规律的数字，且极易写错：
+    /// - `kVK_F2 = 0x78 = 120`（**不是 96** —— 96 是 `kVK_F5`，历史上在此写成 96，
+    ///   导致「按 F2 不触发重命名、按 F5 反而触发」；`FileKeyShortcuts.f2` 的语义是重命名）
+    /// - 其余见 Carbon `Events.h`：`kVK_Delete = 117`（fn+⌫，Delete Forward）、
+    ///   `kVK_Return = 36`、`kVK_Escape = 53`、`kVK_Space = 49`、`kVK_ForwardDelete = 51`（⌫）
     static func fileKeyName(from event: NSEvent) -> String {
-        switch event.keyCode {
-        case 51:  return "backspace"    // ⌫
-        case 117: return "delete"       // fn+⌫（Delete Forward）
-        case 53:  return "escape"
-        case 36:  return "enter"        // ↩
-        case 49:  return "space"
-        case 96:  return "f2"
-        default:  break
+        // `event.keyCode` 是 UInt16，而 Carbon 的 kVK_* 是 Int —— 这里统一折成 UInt32 传给键码表。
+        let code = UInt32(event.keyCode)
+        switch code {
+        case UInt32(kVK_ForwardDelete): return "backspace"  // ⌫
+        case UInt32(kVK_Delete):       return "delete"     // fn+⌫（Delete Forward）
+        case UInt32(kVK_Escape):       return "escape"
+        case UInt32(kVK_Return):       return "enter"      // ↩
+        case UInt32(kVK_Space):        return "space"
+        default:                       break
         }
+        // F 键统一交给 FunctionKeys（键码表单一来源）。历史上这里写的是 `case 96: return "f2"`，
+        // 而 96 是 kVK_F5、kVK_F2 其实是 120 ⇒ 「按 F2 不重命名、按 F5 才重命名」。
+        if let fn = FunctionKeys.name(for: code) { return fn.lowercased() }
         guard let ch = event.charactersIgnoringModifiers, !ch.isEmpty else { return "" }
         return ch.lowercased()
     }
@@ -225,6 +332,9 @@ extension AppDelegate {
 
         case .paste:
             pasteClipboard(into: context.cwd, in: id)
+
+        case .undo:
+            undoLastFileOperation(in: id)
         }
     }
 
@@ -240,14 +350,19 @@ extension AppDelegate {
         guard !paths.isEmpty else { return }
         var failed: [String] = []
         var moved = 0
+        var trashedPairs: [(original: String, trashed: String)] = []
         for path in paths {
             let before = FileManager.default.fileExists(atPath: path)
-            trashFile(path)
-            if before && !FileManager.default.fileExists(atPath: path) {
+            if let trashedPath = trashFileResultingPath(path), before {
                 moved += 1
+                trashedPairs.append((original: path, trashed: trashedPath))
             } else {
                 failed.append((path as NSString).lastPathComponent)
             }
+        }
+        if moved > 0 {
+            // 记下「哪一锅盘子饺落在废纸篓的哪个名字上」—— ⌘Z 全靠它捡回来。
+            FileUndoStack.shared.push(.restoreFromTrash(pairs: trashedPairs), verb: "移到废纸篓")
         }
         NotificationCenter.default.post(name: .portalFolderChanged, object: id)
         if moved > 0 {
@@ -272,13 +387,31 @@ extension AppDelegate {
     @discardableResult
     func pasteClipboard(into directory: String, in id: String) -> (done: Int, failed: [String]) {
         let clip = FileClipboard.shared
-        guard !clip.isEmpty, !directory.isEmpty else { return (0, []) }
+        guard !directory.isEmpty else { return (0, []) }
+
+        // 内部剪贴板空着时退到**系统剪贴板**：在访达里 ⌘C 再回来贴是很自然的动作，
+        // 而原来的实现遇到这种情况会**静默返回** —— 用户只看到「⌘V 没反应」，
+        // 于是得出「粘贴快捷键坏了」的结论。要么真能贴，要么把话说清楚。
+        let fallbackPaths = clip.isEmpty ? systemPasteboardFilePaths() : []
+        let paths = clip.isEmpty ? fallbackPaths : clip.paths
+        guard !paths.isEmpty else {
+            Toast.shared.show("没有可粘贴的内容",
+                              detail: "先在 DeskIsle 里 ⌘C / ⌘X，或在访达里复制文件",
+                              icon: "doc.on.clipboard")
+            return (0, [])
+        }
 
         // 复用移入的同名冲突三选一逻辑（保留两者 / 停止 / 替换）。
         // 剪切 = 移动，复制 = 复制；「停止」会整体取消且**不清空**剪切板（让用户重试）。
-        let (done, failed, decision) = relocateFiles(clip.paths, into: directory, move: clip.isCut)
+        let (done, failed, decision, pairs) = relocateFiles(paths, into: directory, move: clip.isCut)
 
         if done > 0 {
+            // 剪切挪进来的 = 移回原处；复制出来的 = 删掉这些副本。
+            if clip.isCut {
+                FileUndoStack.shared.push(.moveBack(pairs: pairs), verb: "粘贴（移动）")
+            } else {
+                FileUndoStack.shared.push(.removeCopies(pairs.map(\.to)), verb: "粘贴（复制）")
+            }
             NotificationCenter.default.post(name: .portalFolderChanged, object: id)
             Toast.shared.show(clip.isCut ? "已粘贴（移动 \(done) 项）" : "已粘贴（复制 \(done) 项）",
                               detail: (directory as NSString).lastPathComponent,
@@ -293,6 +426,15 @@ extension AppDelegate {
         // 但「停止」= 整体取消，保留剪切板让用户换个动作重试。
         if clip.isCut && decision != .stop { clip.clear() }
         return (done, failed)
+    }
+
+    /// 系统剪贴板里的文件路径（访达复制的结果）。
+    private func systemPasteboardFilePaths() -> [String] {
+        guard let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] else {
+            return []
+        }
+        // 只认本地存在的文件：网页 URL / 纯文本不该在这里被当成「能贴的文件」。
+        return urls.map(\.path).filter { FileManager.default.fileExists(atPath: $0) }
     }
 
     private func reportClipboard(_ verb: String, count: Int, icon: String) {
@@ -318,22 +460,6 @@ extension AppDelegate {
         let urls = paths.map { URL(fileURLWithPath: $0) }
         guard !urls.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
-    }
-
-    // MARK: - 访达新标签页中打开
-
-    /// 在访达中以新标签页（或新窗口）打开指定目录。
-    func openInNewTab(_ path: String) {
-        let script = """
-        tell application "Finder"
-            activate
-            open POSIX file "\(path.replacingOccurrences(of: "\"", with: "\\\""))"
-        end tell
-        """
-        DispatchQueue.global(qos: .userInitiated).async {
-            var error: NSDictionary?
-            NSAppleScript(source: script)?.executeAndReturnError(&error)
-        }
     }
 
     // MARK: - 原生显示简介（Get Info）
@@ -498,6 +624,7 @@ extension AppDelegate {
     func duplicatePaths(_ paths: [String], in partitionId: String) {
         guard !paths.isEmpty else { return }
         var done = 0
+        var created: [String] = []
         for path in paths {
             let parent = (path as NSString).deletingLastPathComponent
             let last = (path as NSString).lastPathComponent
@@ -519,60 +646,16 @@ extension AppDelegate {
             do {
                 try FileManager.default.copyItem(atPath: path, toPath: dest)
                 done += 1
+                created.append(dest)
             } catch {
                 NSLog("[DeskIsle] 复制副本失败: %@", error.localizedDescription)
             }
         }
 
         if done > 0 {
+            FileUndoStack.shared.push(.removeCreated(created), verb: "制作副本")
             NotificationCenter.default.post(name: .portalFolderChanged, object: partitionId)
             Toast.shared.show(done == 1 ? "已创建副本" : "已创建 \(done) 项副本", icon: "plus.square.on.square")
-        }
-    }
-
-    // MARK: - 制作替身（Make Alias，访达快捷键 ⌃⌘A）
-
-    /// 在当前目录下为指定路径创建原生 macOS 替身文件。
-    func createAlias(for paths: [String], in partitionId: String) {
-        guard !paths.isEmpty else { return }
-        var done = 0
-        for path in paths {
-            let parent = (path as NSString).deletingLastPathComponent
-            let last = (path as NSString).lastPathComponent
-            let ext = (path as NSString).pathExtension
-            let stem = ext.isEmpty ? last : (last as NSString).deletingPathExtension
-
-            func makeName(_ counter: Int) -> String {
-                let tag = counter == 1 ? "替身" : "替身 \(counter)"
-                return ext.isEmpty ? "\(stem) \(tag)" : "\(stem) \(tag).\(ext)"
-            }
-
-            var counter = 1
-            var dest = (parent as NSString).appendingPathComponent(makeName(counter))
-            while FileManager.default.fileExists(atPath: dest) {
-                counter += 1
-                dest = (parent as NSString).appendingPathComponent(makeName(counter))
-            }
-
-            let srcURL = URL(fileURLWithPath: path)
-            let destURL = URL(fileURLWithPath: dest)
-            do {
-                let data = try srcURL.bookmarkData(options: .suitableForBookmarkFile, includingResourceValuesForKeys: nil, relativeTo: nil)
-                try URL.writeBookmarkData(data, to: destURL)
-                done += 1
-            } catch {
-                do {
-                    try FileManager.default.createSymbolicLink(atPath: dest, withDestinationPath: path)
-                    done += 1
-                } catch {
-                    NSLog("[DeskIsle] 制作替身失败: %@", error.localizedDescription)
-                }
-            }
-        }
-
-        if done > 0 {
-            NotificationCenter.default.post(name: .portalFolderChanged, object: partitionId)
-            Toast.shared.show(done == 1 ? "已制作替身" : "已制作 \(done) 项替身", icon: "arrow.uturn.right.square")
         }
     }
 

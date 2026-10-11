@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import DeskIsleCore    // FunctionKeys：功能键键码表的单一来源
 import SwiftUI
 
 /// 全局快捷键的组合键模型。
@@ -103,20 +104,29 @@ struct Shortcut: Equatable {
         return m
     }
 
-    static func isFunctionKey(_ code: UInt32) -> Bool { (96...111).contains(Int(code)) }
+    /// 「不带修饰键也允许单独按」的**功能键**（F1–F12）。
+    ///
+    /// ⚠️⚠️ 判据与键码表统一走 `DeskIsleCore.FunctionKeys`，本文件**不自己维护任何数字**。
+    /// 历史 bug：本函数曾是 `(96...111).contains(code)`，看着像"F1 到 F12"，
+    /// 但功能键码在 Carbon 里**不是连续的**（F3 插在 F7/F8 之间，F1/F2/F4 远在 118 以上），
+    /// 那个区间实际漏掉 F1/F2/F4 却放行了 F13/F14/F16 ——
+    /// 后果是配置里的 `"F1"` 被 `guard` **静默丢弃**并退回默认键。详见 `FunctionKeys.swift`。
+    static func isFunctionKey(_ code: UInt32) -> Bool { FunctionKeys.isFunctionKey(code) }
 
+    /// 键码 → 展示名。
+    ///
+    /// ⚠️ **F1–F12 不写在这里**：它们由 `FunctionKeys` 单点维护（见该文件头注释，
+    /// 键码非连续、极易写错），本表只放不与功能键重名的那些。
     private static let names: [UInt32: String] = [
         UInt32(kVK_Space): "Space", UInt32(kVK_Return): "↩", UInt32(kVK_Delete): "⌫",
         UInt32(kVK_Escape): "⎋", UInt32(kVK_Tab): "⇥",
         UInt32(kVK_LeftArrow): "←", UInt32(kVK_RightArrow): "→",
         UInt32(kVK_UpArrow): "↑", UInt32(kVK_DownArrow): "↓",
-        UInt32(kVK_F1): "F1", UInt32(kVK_F2): "F2", UInt32(kVK_F3): "F3", UInt32(kVK_F4): "F4",
-        UInt32(kVK_F5): "F5", UInt32(kVK_F6): "F6", UInt32(kVK_F7): "F7", UInt32(kVK_F8): "F8",
-        UInt32(kVK_F9): "F9", UInt32(kVK_F10): "F10", UInt32(kVK_F11): "F11", UInt32(kVK_F12): "F12"
     ]
 
     static func name(for code: UInt32) -> String {
         if let n = names[code] { return n }
+        if let fn = FunctionKeys.name(for: code) { return fn }
         for (c, k) in Self.letterCodes where k == code { return c }
         for (c, k) in Self.digitCodes where k == code { return c }
         return "Key\(code)"
@@ -124,6 +134,7 @@ struct Shortcut: Equatable {
 
     static func keyCode(for name: String) -> UInt32? {
         if let hit = names.first(where: { $0.value.caseInsensitiveCompare(name) == .orderedSame }) { return hit.key }
+        if let fc = FunctionKeys.code(for: name) { return fc }
         if let k = letterCodes[name.uppercased()] { return k }
         if let k = digitCodes[name] { return k }
         return nil

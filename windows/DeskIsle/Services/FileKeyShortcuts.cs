@@ -19,7 +19,7 @@ namespace DeskIsle.Services
     /// 归一化的键标识。三端各自的原生键名（<c>NSEvent</c> / WPF 的 <c>Key</c> / <c>KeyboardEvent.key</c>）
     /// 先过 <see cref="FileKeyShortcuts.FromName"/> 收敛到这里，语义表才只有一份。
     /// </summary>
-    public enum FileKey { A, C, X, V, Escape, Enter, F2, Space, Delete, Backspace, Other }
+    public enum FileKey { A, C, X, V, Z, Escape, Enter, F2, Space, Delete, Backspace, Other }
 
     /// <summary>一个按键组合在「文件列表」语境下代表的动作。</summary>
     public enum FileKeyAction
@@ -32,7 +32,9 @@ namespace DeskIsle.Services
         Preview,
         Copy,
         Cut,
-        Paste
+        Paste,
+        /// <summary>撤销上一次文件操作（Ctrl+Z / ⌘Z）。执行层目前只在 mac 端落地。</summary>
+        Undo
     }
 
     /// <summary>
@@ -53,6 +55,7 @@ namespace DeskIsle.Services
                 case "c": return FileKey.C;
                 case "x": return FileKey.X;
                 case "v": return FileKey.V;
+                case "z": return FileKey.Z;
                 case "escape":
                 case "esc": return FileKey.Escape;
                 case "enter":
@@ -95,6 +98,11 @@ namespace DeskIsle.Services
                 case FileKey.V:
                     // 粘贴跟「当前有没有选中」无关：剪贴板里有东西就该能贴。
                     return primary ? FileKeyAction.Paste : FileKeyAction.None;
+
+                case FileKey.Z:
+                    // 撤销与选区无关 —— 它撤销的是**上一次操作**，而不是选中的东西。
+                    // ⚠️ 带 ⇧ 时不接管（⌘⇧Z 在很多 app 里是「重做」，语义相反，宁可不动）。
+                    return primary && !shift ? FileKeyAction.Undo : FileKeyAction.None;
 
                 case FileKey.Escape:
                     return hasSelection ? FileKeyAction.ClearSelection : FileKeyAction.None;

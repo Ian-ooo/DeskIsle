@@ -104,7 +104,8 @@ func run(_ items: [LayoutEngine.AlignItem], mode: String, order: String) -> [Str
 
 var out: [String: Any] = [:]
 for (scene, items) in scenarios {
-    for mode in ["top", "left", "right", "grid"] {
+    // ⚠️ 曾经的 "grid"（网格平铺）已下线，与 top 差异极小，不再产出对照数据。
+    for mode in ["top", "left", "right"] {
         // 只有 top 区分横排方向（贴左 / 贴右）；其余模式的 order 被忽略，
         // 但 Python 侧同样传了 "leftToRight"，保持一致。
         for order in (mode == "top" ? ["leftToRight", "rightToLeft"] : ["leftToRight"]) {

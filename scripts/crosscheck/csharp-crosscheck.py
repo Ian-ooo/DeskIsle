@@ -293,6 +293,16 @@ def column_placements(sorted_ids, part_map, get_eff_h, get_w,
     return result
 
 
+def normalize_align_mode(mode):
+    """排列模式归一化：未知 / 已下线的模式一律回退到 top。
+
+    曾经的第四种模式 grid（行优先网格平铺）已下线。必须在此翻译成 top，
+    否则它会掉进非 top 的读序分支（按几何位置排序），与 Swift / C# 结果不一致。
+    """
+    lower = mode.lower()
+    return lower if lower in ("top", "left", "right") else "top"
+
+
 def calculate_layout(mode, partitions, screen_width, screen_height,
                      top_margin=76.0, bottom_margin=32.0,
                      max_columns=6, top_height_order="leftToRight"):
@@ -312,65 +322,18 @@ def calculate_layout(mode, partitions, screen_width, screen_height,
         return p["w"] if p.get("w", 0) > 0 else DEFAULT_PARTITION_WIDTH
 
     part_map = {p["id"]: p for p in partitions}
-    lower = mode.lower()
+    # ⚠️ 读序与列数策略都依赖 mode，必须在**入口**就归一化（与 Swift / C# 同一位置），
+    # 否则老配置里残留的 "grid" 会掉进 else 分支，结果与另两端不一致。
+    lower = normalize_align_mode(mode)
 
-    is_column_mode = lower in ("left", "top", "right")
-    if is_column_mode:
-        if lower == "top":
-            sorted_ids = [p["id"] for p in partitions]      # 配置顺序
-        else:
-            min_x = min(p["x"] for p in partitions)
-            max_right = max(p["x"] + get_w(p) for p in partitions)
-            read_from_right = (screen_width - MARGIN - max_right) < (min_x - MARGIN)
-            index_of = {p["id"]: i for i, p in enumerate(partitions)}
-
-            def cmp_key(p):
-                # C# 的 Sort 用比较器，这里用「(X 方向序, Y, 原序)」等价表达
-                return (-(p["x"]) if read_from_right else p["x"], p["y"], index_of[p["id"]])
-
-            # ⚠️ C# 里 X 差 >60 才算不同列；用 key 直接排序会丢掉这个阈值，
-            # 因此这里手工复刻比较器（同一列内按 Y，再按原序）
-            def gt(a, b):
-                if abs(a["x"] - b["x"]) > 60:
-                    return (a["x"] > b["x"]) if read_from_right else (a["x"] < b["x"])
-                if abs(a["y"] - b["y"]) > 1:
-                    return a["y"] < b["y"]
-                return index_of[a["id"]] < index_of[b["id"]]
-
-            import functools
-            sorted_ids = [p["id"] for p in sorted(
-                partitions, key=functools.cmp_to_key(lambda a, b: -1 if gt(a, b) else (1 if gt(b, a) else 0)))]
-    else:
-        index_of = {p["id"]: i for i, p in enumerate(partitions)}
-        sorted_ids = [p["id"] for p in sorted(
-            partitions, key=lambda p: (round(p["y"]), round(p["x"]), index_of[p["id"]]))]
+    # ⚠️ 曾经的 "grid"（网格平铺）已下线，未知/旧模式一律归一化成 top，与 Swift / C# 一致。
+    # ⚠️ **三个模式一律按配置顺序读**，不用几何位置排读序（与 Swift / C# 一致）。
+    # 历史：left / right 曾按「当前布局贴靠哪一边」从几何反推读序；但现在三种模式都会
+    # 把列按列高降序摆开，落位后「列的空间顺序」不再是读序 —— 再按几何读回来就是另一条
+    # 序列，连点会漂移。改用配置顺序这个与布局无关的稳定来源。
+    sorted_ids = [p["id"] for p in partitions]      # 配置顺序
 
     result = {}
-    if not is_column_mode:
-        # grid
-        num_cols = max(1, min(len(sorted_ids), max(4, min(8, max_columns))))
-        while num_cols > 1:
-            max_w = [0.0] * num_cols
-            for idx, sid in enumerate(sorted_ids):
-                max_w[idx % num_cols] = max(max_w[idx % num_cols], get_w(part_map[sid]))
-            if sum(max_w) + (num_cols - 1) * GAP <= avail_w:
-                break
-            num_cols -= 1
-        rows = [sorted_ids[i:i + num_cols] for i in range(0, len(sorted_ids), num_cols)]
-        col_widths = []
-        for c in range(num_cols):
-            items = [r[c] for r in rows if c < len(r)]
-            col_widths.append(max([get_w(part_map[i]) for i in items], default=DEFAULT_PARTITION_WIDTH))
-        col_x = [MARGIN]
-        for c in range(1, num_cols):
-            col_x.append(col_x[c - 1] + col_widths[c - 1] + GAP)
-        cur_y = top_margin
-        for row in rows:
-            row_max_h = max([get_eff_h(part_map[i]) for i in row], default=FALLBACK_HEIGHT)
-            for c, sid in enumerate(row):
-                result[sid] = (col_x[c], cur_y)
-            cur_y += row_max_h + GAP
-        return result
 
     is_top = lower == "top"
     count_mode = "atMost" if is_top else "minimumFeasible"
@@ -380,7 +343,7 @@ def calculate_layout(mode, partitions, screen_width, screen_height,
     result.update(column_placements(
         sorted_ids, part_map, get_eff_h, get_w,
         screen_width, avail_h, avail_w, top_margin,
-        from_right, count_mode, column_limit, sort_by_height=is_top))
+        from_right, count_mode, column_limit, sort_by_height=True))
     return result
 
 
@@ -434,7 +397,7 @@ def main():
     for scene, parts in SCENARIOS():
         ids = [p["id"] for p in parts]
         hmap = {p["id"]: p["h"] for p in parts}
-        for mode in ("top", "left", "right", "grid"):
+        for mode in ("top", "left", "right"):
             for order in (("leftToRight", "rightToLeft") if mode == "top" else ("leftToRight",)):
                 r = calculate_layout(mode, parts, 1920, 1200, top_margin=100,
                                      bottom_margin=40, max_columns=5, top_height_order=order)

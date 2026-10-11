@@ -196,7 +196,7 @@ final class PartitionPanel: NSPanel {
 
     /// 折叠：窗口收窄到标题栏高度（44）；展开：恢复 `expandedHeight`。
     func applyCollapsed(_ collapsed: Bool, expandedHeight: CGFloat, animate: Bool = true) {
-        let h = collapsed ? 44 : expandedHeight
+        let h = collapsed ? PartitionMetrics.headerHeight : expandedHeight
         var f = frame
         // 折叠/展开时保持顶部对齐（AppKit 左下原点 → 保持 origin.y 不变会从底部收放，
         // 需按高度差上移 origin 以保持顶部不动）。
@@ -362,16 +362,8 @@ final class PartitionPanel: NSPanel {
         return nil
     }
 
-    private var isTextInputActive: Bool {
-        guard let responder = firstResponder else { return false }
-        if let tv = responder as? NSTextView, tv.isEditable {
-            return true
-        }
-        if responder is NSTextField {
-            return true
-        }
-        return false
-    }
+    // keyboard focus 的判定已上移到 AppDelegate.isTextInputActive(in:) —— 那里既有
+    // SwiftUI 的焦点信号，也保留了对便签原生文本视图的兜底，比在这里猜 firstResponder 准。
 
     override func sendEvent(_ event: NSEvent) {
         // isLocked(partitionID) 内部已含「本屏全局锁 ‖ 分区锁」，无需再叠加全局开关
@@ -383,13 +375,9 @@ final class PartitionPanel: NSPanel {
 
         switch event.type {
         case .keyDown:
-            // 文件列表的键盘意图（⌘A / ⌘⌫ / ⌘C、方向键、首字母跳转…）由 AppDelegate 统一裁决：
-            // ⚠️ 正在编辑文本（如搜索框、便签、重命名文本框）时绝不拦截，避免打字被吃掉。
-            // ⚠️ 只有当前分区确实是 portal 且不是文本输入时才处理。
-            if !isTextInputActive,
-               AppDelegate.shared?.handleFileKey(partitionID: partitionID, event: event) == true {
-                return
-            }
+            // 键盘一律走 AppDelegate 的应用级路由（`installFileKeyRouting`）——
+            // 这里的分支**只在分区是 key window 时**才会被调用，而 `.nonactivatingPanel`
+            // 随时会被系统收走 key，靠它接快捷键会时灵时不灵（详见那里的注释）。
             super.sendEvent(event)
 
         case .mouseMoved:

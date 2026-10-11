@@ -18,7 +18,7 @@ public enum FileKeyLayout: String, Sendable, CaseIterable {
 /// 归一化的键标识。三端各自的原生键名（`NSEvent` / `Key` / `KeyboardEvent.key`）
 /// 先过 `FileKeyShortcuts.key(fromName:)` 收敛到这里，语义表才只有一份。
 public enum FileKey: String, Sendable, CaseIterable {
-    case a, c, x, v
+    case a, c, x, v, z
     case escape, enter, f2, space
     case delete, backspace
     case other
@@ -35,6 +35,8 @@ public enum FileKeyAction: String, Sendable, CaseIterable, Equatable {
     case copy
     case cut
     case paste
+    /// 撤销上一次文件操作（⌘Z / Ctrl+Z）。
+    case undo
 }
 
 /// 文件列表里的键盘 / 快捷键判据 —— 对齐访达与资源管理器的手感的**唯一出处**。
@@ -53,6 +55,7 @@ public struct FileKeyShortcuts {
         case "c":                       return .c
         case "x":                       return .x
         case "v":                       return .v
+        case "z":                       return .z
         case "escape", "esc":           return .escape
         case "enter", "return":         return .enter
         case "f2":                      return .f2
@@ -91,6 +94,11 @@ public struct FileKeyShortcuts {
         case .v:
             // 粘贴跟「当前有没有选中」无关：剪贴板里有东西就该能贴。
             return primary ? .paste : .none
+
+        case .z:
+            // 撤销与选区无关 —— 它撤销的是**上一次操作**，而不是选中的东西。
+            // ⚠️ 带 ⇧ 时不接管（⌘⇧Z 在很多 app 里是「重做」，语义相反，宁可不动）。
+            return primary && !shift ? .undo : .none
 
         case .escape:
             return hasSelection ? .clearSelection : .none

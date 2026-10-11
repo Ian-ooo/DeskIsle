@@ -386,22 +386,6 @@ struct PartitionView: View {
     }
 }
 
-// MARK: - 拖出载体
-
-/// 构造「把文件从分区拖到别处」的拖放载体（Finder / 邮件 / 聊天窗口等）。
-///
-/// 用 `NSItemProvider(contentsOf:)` 携带**文件 URL**而不是纯文本 ——
-/// 接收方才能拿到真实文件并执行复制/移动；传文本的话对方只会得到一串路径。
-/// 目录同样支持（拖到访达可复制整个文件夹）。
-///
-/// ⚠️ 放在文件作用域：portal 分区各处共用同一份实现，
-/// 避免各处各写一份导致行为不一致（例如某处漏设 `suggestedName`）。
-func fileDragProvider(_ path: String) -> NSItemProvider {
-    let url = URL(fileURLWithPath: path)
-    guard let provider = NSItemProvider(contentsOf: url) else { return NSItemProvider() }
-    provider.suggestedName = url.lastPathComponent
-    return provider
-}
 
 /// 从 drop 进来的 provider 里取出文件路径。
 ///
@@ -438,6 +422,12 @@ private struct SearchField: View {
     @Binding var text: String
     var onSubmit: (() -> Void)? = nil
     var onCancel: (() -> Void)? = nil
+    /// 所属分区 —— 只响应**自己这个分区**的放弃焦点通知。
+    let partitionID: String
+    /// 焦点变化上报 —— 文件快捷键靠它判断「键盘现在是不是归输入框」。
+    /// ⚠️ 不能用 firstResponder 反推：nonactivatingPanel 里点别处不会让 TextField resign，
+    /// 于是「点过一次搜索」之后所有文件快捷键会被永久判成「正在打字」（见 `isTextInputActive`）。
+    var onFocusChange: ((Bool) -> Void)? = nil
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -449,6 +439,14 @@ private struct SearchField: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 11))
                 .focused($isFocused)
+                .onChange(of: isFocused) { onFocusChange?($0) }
+                // ⚠️ 焦点**释放**必须由外部推动：nonactivatingPanel 下点击文件列表不会让
+                // `@FocusState` 自己变回 false，只能由 `releaseTextFocusIfNeeded` 通知到这里
+                // 显式置 false（否则「点过一次搜索框」之后文件快捷键永久失效）。
+                .onReceive(NotificationCenter.default.publisher(for: .portalResignTextFocus)) { note in
+                    guard (note.object as? String) == partitionID else { return }
+                    isFocused = false
+                }
                 .onSubmit { onSubmit?() }
                 .onExitCommand {
                     text = ""
@@ -846,7 +844,13 @@ struct PortalView: View {
             .buttonStyle(.plain)
             .help("切换网格/列表视图")
 
-            SearchField(text: $search, onSubmit: { handleSearchSubmit() }).frame(maxWidth: 110)
+            SearchField(text: $search,
+                        onSubmit: { handleSearchSubmit() },
+                        partitionID: id,
+                        onFocusChange: { focused in
+                            AppDelegate.shared?.setPortalTextFocus(id, active: focused)
+                        })
+            .frame(maxWidth: 110)
 
             Button { showingNewFolder = true } label: {
                 Image(systemName: "folder.badge.plus").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -1269,6 +1273,13 @@ struct PortalView: View {
             currentIdx = nil
         }
 
+        // ⚠️⚠️ 这里的 20 / 8 / 82 是**第三份**「网格每行几列」的算法，必须与另两处绑在一起：
+        //   ① 本处（方向键几何跳转）= `(containerWidth - 2×padding + spacing) / tileWidth`
+        //   ② `PartitionMetrics.gridColumns`（自适应高度算行数）= `(width - 2×padding) / tileWidth`
+        //   ③ 本文件网格布局的 `GridItem(.adaptive(minimum: 74), spacing: 8)`
+        // 三处数字一一对应（20 = 2×gridPadding、82 = gridTileWidth、8 = ③ 的 spacing），
+        // **改任一处必须同步另两处**，否则方向键跳格会与实际渲染出来的行数错位
+        //（表现为「↓ 一下跳两行」这类说不清的怪现象）。
         let columns = viewMode == "list" ? 1 : max(1, Int((containerWidth - 20 + 8) / 82))
         let nextIdx = TypeToSelect.nextIndex(
             currentIndex: currentIdx,
@@ -2751,11 +2762,10 @@ struct TopBarView: View {
 
             divider
 
-            // 组 2：分区排版对齐（顶部 / 左侧 / 右侧 / 网格规整）
+            // 组 2：分区排版对齐（顶部 / 左侧 / 右侧）
             topButton("arrow.up.to.line", "顶部横向排序", active: alignMode == "top") { setAlign("top") }
             topButton("arrow.left.to.line", "左侧纵向对齐", active: alignMode == "left") { setAlign("left") }
             topButton("arrow.right.to.line", "右侧纵向对齐", active: alignMode == "right") { setAlign("right") }
-            topButton("square.grid.2x2", "网格规整排列", active: alignMode == "grid") { setAlign("grid") }
 
             divider
 

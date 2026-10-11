@@ -1,5 +1,4 @@
 import AppKit
-import DeskIsleCore
 
 /// 分区内的**文件剪贴板**（⌘C / ⌘X / ⌘V）。
 ///

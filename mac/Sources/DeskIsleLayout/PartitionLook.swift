@@ -38,9 +38,6 @@ public enum PartitionLook {
     public static let defaultHeaderColor = "#38bdf8"
     /// 缺省正文色：**空串 = 跟随系统**（深色 / 浅色外观都能读）——不写死颜色是刻意的。
     public static let defaultContentTextColor = ""
-    /// 正文色 UI 上给笔画不了的预览用的占位色（不是默认值，别混淆）。
-    public static let contentTextPreviewColor = "#ffffff"
-
     /// 常用色板（hex，三端顺序一致）。
     public static let palette: [String] = [
         "#000000", "#1e293b", "#0f766e", "#2563eb",

@@ -59,6 +59,24 @@ public enum PartitionMetrics {
         max(1, Int((width - 2 * gridPadding) / gridTileWidth))
     }
 
+    // MARK: 自适应宽度（分区基准宽度）
+
+    /// 「自适应均分」模式下的分区宽度：屏幕宽度按列数均分，列间与屏幕两侧各留 `gap`。
+    ///
+    /// ⚠️ 宽度是**屏幕宽度的函数**：1920 的屏 → 364，1512 的屏 → 285。
+    /// 所以调用方必须传「分区所在屏」的宽度。传「鼠标所在屏」会让同一个分区
+    /// 在不同时刻算出不同宽度 —— 这就是「重启后分区宽度偶发变化」的根因。
+    ///
+    /// 间距数 = 列数 + 1：列与列之间 (cols − 1) 个，再加屏幕左右两侧各一个。
+    public static func autoColumnWidth(screenWidth: CGFloat, columns: Int,
+                                       gap: CGFloat = 16, minimum: CGFloat = 200) -> CGFloat {
+        let cols = max(1, columns)
+        // 拿不到屏宽（0 / 负数）时按 1920 兜底，避免算出负宽度
+        let available = screenWidth > 0 ? screenWidth : 1920
+        let calculated = floor((available - CGFloat(cols + 1) * gap) / CGFloat(cols))
+        return max(minimum, calculated)
+    }
+
     /// portal 的内容高度 = 工具栏 + 行数 × 行高 + 上下留白。
     public static func gridContentHeight(count: Int, width: CGFloat) -> CGFloat {
         let cols = gridColumns(width: width)
@@ -298,73 +316,6 @@ public enum LayoutEngine {
         return widest > 0 ? widest : defaultWidth
     }
 
-    /// 横向网格 / 顶部横排：**行优先**分配。
-    /// 同一排内所有分区的 Y 严格相同，排间以「该排最大有效高度」换行；
-    /// 同一列内所有分区的 X 严格相同。
-    public static func gridPlacements(
-        ids: [String],
-        effectiveHeight: (String) -> Double,
-        width: (String) -> Double,
-        height: (String) -> Double,
-        screenWidth: Double,
-        top: Double,
-        maxColumns: Int,
-        defaultWidth: Double
-    ) -> [Placement] {
-        guard !ids.isEmpty else { return [] }
-        let margin = Double(Layout.margin)
-        let gap = Double(Layout.gap)
-        let availW = screenWidth - 2 * margin
-
-        // 1. 实际能容纳的列数（逐步递减直到总宽放得下）
-        var numCols = max(1, min(ids.count, max(1, maxColumns)))
-        while numCols > 1 {
-            var maxWidthPerCol = Array(repeating: 0.0, count: numCols)
-            for (idx, id) in ids.enumerated() {
-                let c = idx % numCols
-                maxWidthPerCol[c] = max(maxWidthPerCol[c], width(id))
-            }
-            // ⚠️ 宽度非正的列用默认宽兜底 —— 与 Windows / Electron 的 `宽度 > 0 ? : 默认宽` 一致
-            let totalW = maxWidthPerCol.reduce(0.0) { $0 + ($1 > 0 ? $1 : defaultWidth) }
-                + Double(numCols - 1) * gap
-            if totalW <= availW { break }
-            numCols -= 1
-        }
-
-        // 2. 行优先切分
-        var rows: [[String]] = []
-        var currentRow: [String] = []
-        for id in ids {
-            currentRow.append(id)
-            if currentRow.count == numCols {
-                rows.append(currentRow)
-                currentRow = []
-            }
-        }
-        if !currentRow.isEmpty { rows.append(currentRow) }
-
-        // 3. 列 X 坐标（取该列所有分区宽度的最大值，保证同列严格对齐）
-        var colWidths = Array(repeating: defaultWidth, count: numCols)
-        for c in 0 ..< numCols {
-            let colItems = rows.compactMap { r in c < r.count ? r[c] : nil }
-            colWidths[c] = columnWidth(colItems, width: width, defaultWidth: defaultWidth)
-        }
-        var colX = Array(repeating: margin, count: numCols)
-        for c in 1 ..< numCols { colX[c] = colX[c - 1] + colWidths[c - 1] + gap }
-
-        // 4. 逐排摆放
-        var result: [Placement] = []
-        var curY = top
-        for rowItems in rows {
-            let rowMaxH = rowItems.map { effectiveHeight($0) }.max() ?? fallbackHeight
-            for (c, id) in rowItems.enumerated() {
-                result.append(Placement(id: id, x: colX[c], y: curY, width: width(id), height: height(id)))
-            }
-            curY += rowMaxH + gap
-        }
-        return result
-    }
-
     /// 列数策略 —— 三种「列式」对齐模式共用同一段排布，只在列数上分道扬镳。
     public enum ColumnCountMode {
         /// 尽量多列：列数取 `maxColumns` 与分区数的小者，再用可用宽度夹一次。
@@ -478,17 +429,13 @@ public enum LayoutEngine {
                 numCols -= 1
             }
         case .minimumFeasible:
-            // 「左侧 / 右侧纵向对齐」= **逐列填满**：先把最靠边的那一列自上而下塞满，
-            // 塞不下才往内开新列。方向由 `placeColumns` 的 `fromRight` 决定 ⇒ 两向严格镜像。
+            // 「左侧 / 右侧纵向对齐」= **逐列填满**：先把一列自上而下塞满，塞不下才开新列。
             //
-            // ⚠️ 这里刻意**不用** `balancedColumnRanges`：那套保序 DP 的目标是
-            // 「各列尽量等高」，为了压极差会把本该留在第一列的分区挪到后面去 ——
-            // 真实配置实测（3 个分区 428 / 316 / 314，可用高 1060）：
-            // 第一列本可装 2 个（428+16+316 = 760），但均衡分组为了把极差从 446 压到 218，
-            // 把第一列拆得只剩 1 个 ⇒ 用户看到「没有优先填充完最左侧的列」。
-            //
-            // ⚠️ 「填满优先」与「等高优先」不可兼得：代价是最后一列可能明显偏短。
-            // 2026-09-30 用户明确选择前者（此前 09-28 曾反向选择过后者，见测试里的历史注释）。
+            // ⚠️ 2026-10-11 起，调用方（`alignPlacements`）会额外传 `sortColumnsByHeight: true`，
+            // 把塞好的各列**按列高降序摆到屏幕上** ⇒ 「最靠边的那一列最高」恒成立。
+            // 因此「优先填满最靠边的那一列」这条要求已被撤掉 —— 它与「自左向右递减」
+            // 在数学上互斥（见 `alignPlacements` 里 left 分支的注释），用户选择了后者。
+            // 分组内容本身没变，变的只是哪一组摆到最靠边。
             ranges = greedyFillColumnRanges(
                 heights: heights, gap: gap, maxGroupHeight: availH)
         }
@@ -842,34 +789,44 @@ public enum LayoutEngine {
         }
     }
 
-    /// 对齐编排：`top` / `left` / `right` / `grid` 的**读序判定 + 排布分派**。
+    /// 对齐编排：`top` / `left` / `right` 的**读序判定 + 排布分派**。
     ///
-    /// 只算位置（x / y），不改宽高。与 `columnPlacements` / `gridPlacements` 的分工是：
+    /// 只算位置（x / y），不改宽高。与 `columnPlacements` 的分工是：
     /// 这里决定「按什么顺序读、交给哪个排布器」，那边负责「给定序列怎么落位」。
     ///
     /// - Parameters:
     ///   - topHeightOrder: `"leftToRight"` = 整块贴左，`"rightToLeft"` = 整块贴右。
     ///
-    /// - 保持稳定的空间阅读顺序：
-    ///   · left / right：**列优先读序**（先一列自上而下、再下一列），**从当前布局贴的那一侧读起**；
-    ///   · top：**固定读配置顺序**（与当前布局无关）—— 理由见下；
-    ///   · grid：**行优先读序**（上排优先、同排左侧优先）。
-    ///
+    /// - 读序：**三个模式一律读配置顺序**（`$0.index`，与当前布局几何无关）。
     /// ⚠️ 读序必须与排布方式匹配，否则重排后取回的序列已经与列交错 → 再点一次就窜位。
     ///
-    /// ⚠️⚠️ left / right 的「从哪一边读」由**当前布局贴哪一边**决定，**与接下来点哪个模式无关**：
-    /// 贴左就从最左列读起，贴右就从最右列读起。
-    /// 这是「左对齐与右对齐互为镜像」的前提 —— 两个模式必须拿到**同一条序列**，
-    /// 分组才会一致，结果才是彼此的镜像；否则右对齐会按相反的顺序重新分组，
-    /// 切出来的列根本不是同一组（实测 7 个分区：左对齐 814/758/610，
-    /// 右对齐却成了 316/926/940）。
-    /// 同时这也保证幂等：从「贴边的那一侧」读回的序列，正是上一次排布用过的序列。
+    /// ⚠️⚠️ 历史包袱（2026-10-11 前）：`left` / `right` 曾按「当前布局贴哪一边」从几何反推
+    /// 读序（列优先、从贴边那侧读起），`top` 则固定读配置顺序。现在三者统一读配置顺序 ——
+    /// 因为 left / right 也加入了「按列高降序摆开」，落位后**列的空间顺序不再承载读序信息**，
+    /// 再按几何读回来就是另一条序列，连点会越排越歪（与 `top` 当年遇到的是同一个坑：
+    /// 7 分区 / 3 列会一路漂成 1054/646/482 → 978/776/428 → 1220/482/480 …）。
+    /// 代价：手动拖动造成的视觉顺序不再影响分组 —— 这正是「不被上一次排布牵着走」的代价，
+    /// 也是 `top` 早就接受过的代价。换来的是连点幂等，且 left / right 天然同源（互为镜像）。
+    /// 排列模式归一化：未知 / 已下线的模式一律回退到 `top`。
     ///
-    /// ⚠️️⚠️ `top` 为什么反过来要**脱离几何**：它的列是**按列高降序摆开**的
-    /// （`columnPlacements(sortColumnsByHeight: true)`），列的左右顺序**不再承载读序信息**。
-    /// 若还从布局几何推读序，读回来的就是「按列高排过序」的另一条序列，再分组必然切出不同的列 ——
-    /// 实测（7 分区 / 3 列）会一路漂成 1054/646/482 → 978/776/428 → 1220/482/480 …
-    /// 所以 `top` 的序列固定取**配置顺序**（与布局无关的稳定来源）⇒ 输入恒定 ⇒ 结果恒定。
+    /// 曾经的第四种模式 `"grid"`（行优先网格平铺）已下线 —— 它与 `top` 的排布差异极小
+    /// （都贴顶、都按列均分），却要多维护一套分支。老配置里存着的 `"grid"`
+    /// 必须在这里翻译成 `top`：否则它会掉进「非 top」的读序分支（按几何位置排序），
+    /// 与真正走 top 分支的三端结果不一致，重排后位置会漂。
+    ///
+    /// ⚠️ mac / Windows / crosscheck Python 三端都必须做同样的归一化。
+    public static func normalizedAlignMode(_ mode: String) -> String {
+        // ⚠️ **必须小写化**再比对：Windows 的 `NormalizeAlignMode` 与 crosscheck Python
+        // 都做了 `ToLowerInvariant` / `.lower()`。这里若只做大小写敏感比对，
+        // 脏值（`LEFT` / `Right`）就会在 Swift 端回退成 top、另两端保留原模式 ——
+        // 正是本文件注释里反复警告的「三端口径分叉」，会在连点重排后表现为位置漂移。
+        let lower = mode.lowercased()
+        switch lower {
+        case "top", "left", "right": return lower
+        default: return "top"
+        }
+    }
+
     public static func alignPlacements(
         items: [AlignItem],
         mode: String,
@@ -880,38 +837,21 @@ public enum LayoutEngine {
         defaultWidth: Double,
         topHeightOrder: String
     ) -> [Placement] {
+        // ⚠️ 读序与列数策略都依赖 mode，必须在**入口**就归一化，
+        // 否则老配置里残留的模式会走到 else 分支（按几何排读序）而非 top 分支。
+        let mode = LayoutEngine.normalizedAlignMode(mode)
+        // ⚠️ **三个模式一律按配置顺序读**（`$0.index`），不用几何位置排读序。
+        //
+        // 历史：`left` / `right` 曾按「当前布局贴哪一边」从几何反推读序（列优先、同列按 Y），
+        // 目的是让两向拿到同一条序列以保证镜像。但 2026-10-11 起左/右也做了「按列高降序摆开」
+        // （见下方 switch），落位后**列的空间顺序不再是读序** —— 再按几何读回来就是另一条
+        // 序列，连点会越排越歪（与 `top` 当年遇到的是同一个坑：3 列的排布会掉成 2 列）。
+        // ⇒ 改用配置顺序这个**与布局无关的稳定来源**，连点幂等，且 left / right 天然同源。
+        //
+        // ⚠️ 代价：手动拖动造成的视觉顺序不再影响 left / right 的分组
+        // （这正是「不被上一次排布牵着走」的代价，也是 `top` 早就接受过的代价）。
         var sorted = items
-        if mode == "top" {
-            sorted.sort { $0.index < $1.index }
-        } else if mode == "left" || mode == "right" {
-            var minX = Double.infinity
-            var maxRight = -Double.infinity
-            for p in sorted {
-                minX = min(minX, p.x)
-                maxRight = max(maxRight, p.x + p.width)
-            }
-            let margin = Double(Layout.margin)
-            let fromRight: Bool
-            if sorted.isEmpty {
-                fromRight = false
-            } else {
-                let leftGap = minX - margin
-                let rightGap = screenWidth - margin - maxRight
-                fromRight = rightGap < leftGap
-            }
-            sorted.sort { p1, p2 in
-                if abs(p1.x - p2.x) > 60 { return fromRight ? p1.x > p2.x : p1.x < p2.x }
-                if abs(p1.y - p2.y) > 1 { return p1.y < p2.y }
-                return p1.index < p2.index
-            }
-        } else {
-            // grid：行优先读序（上排优先，同排左侧优先）
-            sorted.sort { p1, p2 in
-                if abs(p1.y - p2.y) > 60 { return p1.y < p2.y }
-                if abs(p1.x - p2.x) > 1 { return p1.x < p2.x }
-                return p1.index < p2.index
-            }
-        }
+        sorted.sort { $0.index < $1.index }
 
         let ids = sorted.map { $0.id }
         guard !ids.isEmpty else { return [] }
@@ -932,22 +872,37 @@ public enum LayoutEngine {
 
         switch mode {
         case "left":
-            // 列数取「每列都不超过可用高度」的最少值，再由保序 DP 把各列高度调匀。
+            // 「左侧纵向对齐」= 最少列数（每列刚好不超出可用高度）+ 逐列填满，
+            // 再**把各列按列高降序摆开** ⇒ 最左一列最高，自左向右严格递减或相等。
+            //
+            // ⚠️ 为什么要按列高摆开（2026-10-11 用户反馈）：只用「逐列填满」时，
+            // 真实配置会出现第二列比第一列高的情况（notes 670 单列 / 两个 portal 388+314=718；
+            // notes 那列已塞满 —— 再加 388 会到 1074 > 可用高 940 —— 却仍是矮的那一列）。
+            // 「先填满最靠边的那一列」与「自左向右递减」在数学上互斥，两者不可兼得，
+            // 用户选择了后者（这就撤掉了 2026-09-30 那条「优先填满最靠边列」的要求）。
+            //
+            // ⚠️ 分组内容本身**没有变**（仍是 greedyFill 的那一刀）：只是把高的那组
+            // 摆到靠边的位置，所以「最少列数」这个身份保住了。
             return columnPlacements(
                 ids: ids, effectiveHeight: getEffH, width: getW, height: heightProvider,
                 screenWidth: screenWidth, screenHeight: screenHeight,
                 top: top, defaultWidth: defaultWidth,
-                fromRight: false, columns: .minimumFeasible)
+                fromRight: false, columns: .minimumFeasible, sortColumnsByHeight: true)
         case "right":
             // ⚠️ 必须与 left 用**同一段**算法、只把 fromRight 打开 ——
-            // 这样两者得到的分组完全一致，结果是彼此的**严格几何镜像**。
+            // 这样两者得到的分组完全一致，结果是彼此的**严格几何镜像**
+            // （⇒ 右侧对齐必然「自右向左递减」，也就是自左向右递增）。
             return columnPlacements(
                 ids: ids, effectiveHeight: getEffH, width: getW, height: heightProvider,
                 screenWidth: screenWidth, screenHeight: screenHeight,
                 top: top, defaultWidth: defaultWidth,
-                fromRight: true, columns: .minimumFeasible)
-        case "top":
-            // 尽量多列（maxColumns）→ 各列尽量等高（保序 DP）→ **各列按列高降序摆开**。
+                fromRight: true, columns: .minimumFeasible, sortColumnsByHeight: true)
+        default:
+            // "top"：尽量多列（maxColumns）→ 各列尽量等高（保序 DP）→ **各列按列高降序摆开**。
+            //
+            // ⚠️ 这里用 `default` 而不是 `case "top"`：**已下线的 "grid"**（行优先网格）
+            // 与任何未知模式都会落到这里，老配置里存着的 grid 因此自动回退成 top，
+            // 不会排布出空白或崩溃。UI 侧已不再提供 grid 入口。
             //
             // 「横排列高方向」只决定**整块贴哪一侧**：
             //   从左到右 = 贴左（最高的列在最左，向右依次递减或相等）
@@ -969,11 +924,6 @@ public enum LayoutEngine {
                 fromRight: topHeightOrder == "rightToLeft",
                 columns: .atMost(maxColumns),
                 sortColumnsByHeight: true)
-        default:   // "grid"：行优先网格（同排 Y 相同，排间按该排最高分区换行）
-            return gridPlacements(
-                ids: ids, effectiveHeight: getEffH, width: getW, height: heightProvider,
-                screenWidth: screenWidth, top: top,
-                maxColumns: maxColumns, defaultWidth: defaultWidth)
         }
     }
 }

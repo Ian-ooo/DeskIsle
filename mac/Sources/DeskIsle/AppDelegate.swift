@@ -26,6 +26,10 @@ extension Notification.Name {
     static let portalNavigateParent = Notification.Name("DeskIsle.portalNavigateParent")
     /// 映射文件夹深度键盘流：下钻进入选中文件夹/打开（⌘↓ 或 ⌘O）。object = 分区 id
     static let portalEnterSelected = Notification.Name("DeskIsle.portalEnterSelected")
+    /// 让某个分区的搜索框**放弃焦点**。object = 分区 id。
+    /// 由「用户点了输入框以外的地方」触发 —— SwiftUI 的 `@FocusState` 在
+    /// nonactivatingPanel 下不会自己释放，只能显式推它一把（见 `releaseTextFocus`）。
+    static let portalResignTextFocus = Notification.Name("DeskIsle.portalResignTextFocus")
     /// 辅助功能授权状态变化了（用户在系统设置里勾选 / 取消勾选）。设置面板据此刷新显示。
     static let accessibilityTrustChanged = Notification.Name("DeskIsle.accessibilityTrustChanged")
 }
@@ -112,6 +116,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     let config: Config
     private var panels: [PartitionPanel] = []
+
+    /// 按 ID 取分区窗口 —— batch 之外的单点访问走这里（`panels` 不外露）。
+    func panel(for id: String) -> PartitionPanel? {
+        panels.first { $0.partitionID == id }
+    }
     /// 每台显示器一个顶栏实例（键 = CGDirectDisplayID）。
     /// 多屏下各屏顶栏只控制本屏分区（显隐 / 对齐 / 新建），互不干扰。
     private var topBars: [CGDirectDisplayID: TopBarPanel] = [:]
@@ -171,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupStatusItem()
         startMouseMonitors()
         registerHotkey()
+        installFileKeyRouting()
         startFolderWatching()
         startConfigWatching()
         startScreenObservation()
@@ -197,6 +207,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func appDidBecomeActive() {
         applyToolTipPolicy()
+        // 应用回到前台时，AppKit 会把 key window 交给它认定的「第一个可成 key 的窗口」
+        // （实测常常是顶栏 TopBarPanel）。此时用户上一次交互的分区已经 raise 过、却拿不到键盘，
+        // 表现就是「分区明明是选中态，快捷键却一个都不灵」——所以这里必须显式补一次 makeKey。
+        if QuickPreview.shared.isShowing { return }
+        if let id = raisedPanelID {
+            panels.first(where: { $0.partitionID == id })?.makeKey()
+        }
         if AXIsProcessTrusted() {
             if globalMouse != nil { stopCursorFallbackPoll() }
         } else {
@@ -400,11 +417,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lockItem.view = lockView
         menu.addItem(lockItem)
 
-        // 4. 分区排版对齐（子菜单：四个对齐为视图型点击不收起；重新对齐/自适应为执行型）
+        // 4. 分区排版对齐（子菜单：三个对齐为视图型点击不收起；重新对齐/自适应为执行型）
         let align = NSMenuItem(title: "分区排版对齐", action: nil, keyEquivalent: "")
         let sub = NSMenu()
         let modes: [(String, String)] = [("top", "顶部横向排序"), ("left", "左侧纵向对齐"),
-                                         ("right", "右侧纵向对齐"), ("grid", "网格平铺自适应")]
+                                         ("right", "右侧纵向对齐")]
         for (mode, label) in modes {
             let v = ToggleMenuItemView(title: label, isOn: alignMode == mode) { [weak self] in
                 self?.align(mode: mode)
@@ -418,6 +435,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sub.addItem(.separator())
         sub.addItem(item("重新对齐分区", #selector(menuRealign(_:))))
         sub.addItem(item("所有分区自适应高度", #selector(menuAutoFitAll(_:))))
+        // 宽度也归位到各屏标准值（批量拉齐被手动拖过的宽度）
+        sub.addItem(item("所有分区自适应宽高", #selector(menuAutoFitAllWidths(_:))))
         align.submenu = sub
         menu.addItem(align)
 
@@ -502,6 +521,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openGlobalSettingsMenu() { openGlobalSettings() }
     @objc private func quit() { saveNow(); NSApp.terminate(nil) }
     @objc private func menuAutoFitAll(_ s: NSMenuItem) { autoFitAll() }
+    @objc private func menuAutoFitAllWidths(_ s: NSMenuItem) { autoFitAllIncludingWidth() }
 
     /// 光标所在显示器的对齐模式（托盘菜单高亮、快捷键等全局入口以此为准）。
     /// 多显示器下对齐模式**按屏独立**，见 `Config.alignMode(forScreen:)`。
@@ -658,13 +678,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         saveSoon(0.2)
     }
 
-    private func alignTop() { align(mode: "top") }
-    private func alignLeft() { align(mode: "left") }
-    private func alignRight() { align(mode: "right") }
-    private func alignGrid() { align(mode: "grid") }
-
     /// 分区对齐（对齐 Electron 的 alignPartitions）：
-    /// top=顶部横向、left=左侧纵向、right=右侧纵向、grid=网格平铺。
+    /// top=顶部横向、left=左侧纵向、right=右侧纵向。
+    /// ⚠️ 曾经的第四种 grid=网格平铺已下线：它与 top 的排布差异极小（都贴顶、都按列均分），
+    /// 却多一套行优先的特殊分支。老配置里存着的 "grid" 由 `LayoutEngine.alignPlacements`
+    /// 的 default 分支自动回退成 top。
     /// 只调整位置（x/y），不改变任何分区的宽高。
     /// **只重排指定显示器上的分区**（默认 = 光标所在屏），其他屏的分区完全不受影响。
     func align(mode: String, onScreenID sid: CGDirectDisplayID? = nil) {
@@ -697,7 +715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             items: items, mode: mode,
             screenWidth: Double(sw), screenHeight: Double(sh), top: Double(top),
             maxColumns: config.maxColumns,
-            defaultWidth: Double(defaultPartitionWidth),
+            defaultWidth: Double(standardPartitionWidth(for: screen)),
             topHeightOrder: config.topHeightOrder)
 
         let coords: [(id: String, x: Double, y: Double, w: Double, h: Double)] = placements.map {
@@ -744,7 +762,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let collapsed = config.bool("isCollapsed", of: id)
             // 折叠分区：窗口实际高 44（标题栏），定位用 44 保证左边/顶部正确；
             // 布局占位（上面 curY 累加）仍用展开高度，下方分区以「展开后底部」为基准。
-            let displayH: CGFloat = collapsed ? 44 : CGFloat(nh)
+            let displayH: CGFloat = collapsed ? PartitionMetrics.headerHeight : CGFloat(nh)
             let targetOrigin = nativeOrigin(screen, x: CGFloat(nx), y: CGFloat(ny), h: displayH)
             let targetSize = NSSize(width: CGFloat(nw), height: displayH)
             let curOrigin = p.frame.origin
@@ -919,7 +937,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `settingsPanel` 会一直指向一个已经关闭的窗口。而「有模态开着就不降层」这道门禁
     /// 一旦卡死，未置顶分区被点过之后就再也回不到桌面层 —— 表现正是
     /// 「没设置置顶的分区一直浮在最前面，只能手动点一下置顶再点一下才降回来」。
-    private var isModalOpen: Bool { settingsPanel?.isVisible == true }
+    var isModalOpen: Bool { settingsPanel?.isVisible == true }
 
     /// 所有设置类模态框的唯一出口：尺寸、层级、落位、替换旧面板的逻辑只此一份。
     /// `target` 决定面板落在哪块屏幕 —— 必须显式传入，不能依赖 `NSScreen.main`（随焦点漂移）。
@@ -1116,12 +1134,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 st[key] = value
                 parts[i]["style"] = st
             } else if key == "title" {
-                // 标题（包含 icon 前缀 + 最多 10 个字符）
+                // ⚠️ 标题 = icon 前缀（2 字符）+ 最多 14 个字符 ⇒ 这里按 **16** 兜底截断。
+                // 注释曾写「最多 10 个字符」而代码是 16，属过时注释（已按代码校准）。
+                // 真正的「10」在上游：`createPartition` / `applyPartitionSettings` /
+                // `PartitionView.commitTitle` / 设置面板共 5 处调用点都先做了 `prefix(10)`。
+                // ⇒ 这里只是最后一道防线；改上游的 10 时不必动这里。
                 let s = (value as? String) ?? ""
                 parts[i]["title"] = String(s.prefix(16))
             } else if key == "folderPath" {
                 parts[i]["folderPath"] = value
-                // portal 自动标题：当前标题是默认值时，用文件夹名
+                // portal 自动标题：当前标题**仍是新建时的默认值**时，才跟着文件夹改名。
+                // ⚠️ 这两个哨兵字符串必须与 `createPartition` 的 defaultTitle **逐字一致**，
+                // 否则「用户没自定义过标题」这个判据会失效（改默认标题却忘了改这里，
+                // 分区就会一直保留旧标题，且没有任何报错）。
+                // ⚠️⚠️ `"新便签"` 在 mac 端**任何地方都不存在**（便签默认标题是 `"📝 随手便签"`），
+                // 它是一条永不命中的死条件 —— 某次改标题时漏删的。
+                // 保留它无害（只是恒不成立），但**不要**以为它在生效；真正的默认标题只有上面那个。
                 let title = parts[i]["title"] as? String ?? ""
                 if title.isEmpty || title == "📁 映射文件夹" || title == "新便签" {
                     let folderName = ((value as? String) as NSString?)?.lastPathComponent ?? ""
@@ -1242,11 +1270,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func trashFile(_ path: String) {
+        _ = trashFileResultingPath(path)
+    }
+
+    /// 移到废纸篓，并返回它在废纸篓里的实际路径。
+    ///
+    /// ⚠️ 不要用 `trashFile` 去实现撤销：系统会给同名文件自动改名（`xxx`、`xxx 2`…），
+    /// 只有 `resultingItemURL` 才知道东西最后落在哪个名字上 —— 没有它就还原不回去。
+    @discardableResult
+    func trashFileResultingPath(_ path: String) -> String? {
+        var resulting: NSURL?
         do {
-            try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+            try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: &resulting)
         } catch {
             NSLog("[DeskIsle] 移入废纸篓失败: %@", error.localizedDescription)
+            return nil
         }
+        return resulting?.path
     }
 
     /// 在 portal 分区的当前目录下新建文件夹。
@@ -1265,6 +1305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         do {
             try fm.createDirectory(atPath: full, withIntermediateDirectories: false, attributes: nil)
+            FileUndoStack.shared.push(.removeCreated([full]), verb: "新建文件夹")
             NotificationCenter.default.post(name: .portalFolderChanged, object: id)
         } catch {
             NSLog("[DeskIsle] 新建文件夹失败: %@", error.localizedDescription)
@@ -1290,6 +1331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSLog("[DeskIsle] 新建文本文档失败: %@", full)
             return nil
         }
+        FileUndoStack.shared.push(.removeCreated([full]), verb: "新建文本文件")
         NotificationCenter.default.post(name: .portalFolderChanged, object: id)
         return full
     }
@@ -1303,8 +1345,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///    会静默产出半截结果，必须显式拒绝。
     @discardableResult
     func moveFilesIntoPortal(_ id: String, paths: [String], directory: String) -> (moved: Int, failed: [String]) {
-        let (done, failed, _) = relocateFiles(paths, into: directory, move: true)
+        let (done, failed, _, pairs) = relocateFiles(paths, into: directory, move: true)
         if done > 0 {
+            FileUndoStack.shared.push(.moveBack(pairs: pairs), verb: "移动到此分区")
             NotificationCenter.default.post(name: .portalFolderChanged, object: id)
         }
         return (done, failed)
@@ -1319,7 +1362,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///
     /// 遇同名先弹三选一弹窗；「停止」则整体取消（返回 (0, [])）。
     /// 覆盖与 `moveFilesIntoPortal` 完全一致的三条规矩（不覆盖 / 不进子孙 / 同目录 no-op）。
-    func relocateFiles(_ paths: [String], into directory: String, move: Bool) -> (done: Int, failed: [String], decision: MoveConflictDecision) {
+    /// - Returns: `pairs` 是**成功落位的每一对（原路径 → 新路径）** —— ⌘Z 撤销就靠它，
+    ///   所以「移成功了多少个」这种粗粒度结果是不够用的。
+    func relocateFiles(_ paths: [String], into directory: String, move: Bool)
+        -> (done: Int, failed: [String], decision: MoveConflictDecision, pairs: [(from: String, to: String)]) {
         let fm = FileManager.default
         let dir = FileMove.normalize(directory)
 
@@ -1332,10 +1378,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let names = conflictPaths.map { ($0 as NSString).lastPathComponent }
             decision = resolveMoveConflict(names: names)
         }
-        guard decision != .stop else { return (0, [], .stop) }
+        guard decision != .stop else { return (0, [], .stop, []) }
 
         var done = 0
         var failed: [String] = []
+        var pairs: [(from: String, to: String)] = []
 
         for path in paths {
             let name = (path as NSString).lastPathComponent
@@ -1367,12 +1414,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     try fm.copyItem(atPath: path, toPath: target)
                 }
                 done += 1
+                pairs.append((from: path, to: target))
             } catch {
                 NSLog("[DeskIsle] 移入分区失败 %@ → %@: %@", path, target, error.localizedDescription)
                 failed.append(name)
             }
         }
-        return (done, failed, decision)
+        return (done, failed, decision, pairs)
     }
 
     /// 同名冲突弹窗：保留两者 / 停止 / 替换。返回用户的选择；取消（Esc）视为「停止」。
@@ -1418,8 +1466,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 i += 1
             }
         }
+        let oldName = (path as NSString).lastPathComponent
         do {
             try fm.moveItem(atPath: path, toPath: target)
+            if target != path {
+                FileUndoStack.shared.push(.rename(path: target, oldName: oldName), verb: "重命名")
+            }
         } catch {
             NSLog("[DeskIsle] 重命名失败: %@", error.localizedDescription)
         }
@@ -1772,7 +1824,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 默认初始尺寸：宽 defaultPartitionWidth、高 max(默认高度, 最小高度)（均最低 140）。
         // ⚠️ 取较大值而不是直接用默认高度：用户把「最小高度」抬到默认高度之上时，
         // 新建分区若仍按默认高度生成，一落地就违反自己的下限设定（且右键「自适应」后会被撑大）。
-        let defaultW = Int(defaultPartitionWidth)
+        let defaultW = Int(standardPartitionWidth(for: targetScreen))
         let defaultH = Int(max(effectiveDefaultPartitionHeight(on: targetScreen),
                                effectiveMinPartitionHeight(on: targetScreen)))
         let w = CGFloat(defaultW)
@@ -1979,22 +2031,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - 自动适应内容宽高
 
-    /// 分区默认基准宽度：根据设置（自适应均分或固定宽度）动态得出
+    /// 分区基准宽度：按设置（自适应均分 / 固定宽度）得出**指定屏幕**上的标准宽度。
+    ///
+    /// ⚠️ **宽度是「屏幕」的函数**：同一个分区在 1920 宽的屏上是 364，放到 1512 的屏上就是 285。
+    /// 所以调用方必须传「分区实际所在的屏」—— 绝不能传 `referenceScreen()`。
+    /// `referenceScreen()` 优先取**鼠标当前所在的屏**，于是「点自适应时鼠标碰巧在副屏」
+    /// 就会把主屏分区的宽度按副屏算出来，表现为「重启后宽度偶发变化」。
+    ///
+    /// - auto：按该屏可视宽度均分（每屏一个结果，只取决于屏宽与列数 → 稳定可复现）
+    /// - custom：用户设定的固定宽度（与屏幕无关，所有屏一致）
     func standardPartitionWidth(for screen: NSScreen? = nil) -> CGFloat {
         if config.partitionWidthMode == "custom" {
             return config.customPartitionWidth
         }
-        let scr = screen ?? referenceScreen()
-        let cols = CGFloat(config.maxColumns)
-        let gap: CGFloat = 16.0
-        let totalGaps = (cols + 1) * gap
-        let availableWidth = scr.frame.width > 0 ? scr.frame.width : 1920
-        let calculated = floor((availableWidth - totalGaps) / cols)
-        return max(200.0, calculated)
+        let scr = screen ?? NSScreen.main ?? NSScreen.screens.first
+        return PartitionMetrics.autoColumnWidth(screenWidth: scr?.frame.width ?? 0,
+                                                columns: config.maxColumns)
     }
 
+    /// 回退用的默认宽度。
+    ///
+    /// ⚠️ 只用于「拿不到具体屏幕」的展示场景（如设置面板预览）。凡是会**写回配置**的路径
+    /// （新建 / 自适应 / 重置宽度 / 排版对齐）都必须用带 `screen` 参数的 `standardPartitionWidth(for:)`，
+    /// 否则宽度会随鼠标所在的屏漂移。
     var defaultPartitionWidth: CGFloat {
-        standardPartitionWidth(for: referenceScreen())
+        standardPartitionWidth(for: NSScreen.main)
+    }
+
+    /// 每个屏幕各自的基准宽度（设置面板用来展示「多屏时每屏分别是多少」）。
+    var perScreenStandardWidths: [(name: String, isMain: Bool, width: CGFloat)] {
+        NSScreen.screens.enumerated().map { idx, scr in
+            let isMain = (scr == NSScreen.main)
+            let name = isMain ? "主屏" : "显示器 \(idx + 1)"
+            return (name: name, isMain: isMain, width: standardPartitionWidth(for: scr))
+        }
     }
 
     /// 「分区最小高度」的**实际生效值**：用户设定值再夹一层上限（屏幕可用高 - 60）。
@@ -2052,6 +2122,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 详见 `FileOperations.swift`。
     var portalContexts: [String: FileOpContext] = [:]
 
+    /// 应用级 keyDown 路由器的监视器令牌（见 `installFileKeyRouting`）。
+    /// 之所以必须是应用级：`PartitionPanel.sendEvent` 只在窗口是 key window 时才跑，
+    /// 而分区（`.nonactivatingPanel`）随时会被系统拿走 key —— 那之后所有文件快捷键都会失灵。
+    var fileKeyMonitor: Any?
+    /// 当前有哪些分区的 SwiftUI 文本输入（搜索框）正在持有焦点。
+    /// ⚠️ 不用 `firstResponder` 猜的原因见 `isTextInputActive(in:)`。
+    var portalTextFocus: Set<String> = []
+
     /// PortalView 上报当前浏览路径（传根目录或空串 = 清除记录）。
     func setPortalBrowsePath(_ id: String, _ path: String) {
         let norm = normalizePath(path)
@@ -2101,7 +2179,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if blockedByLock(id, action: "自适应高度") { return }
         guard let panel = panels.first(where: { $0.partitionID == id }) else { return }
         let screen = panel.screen ?? referenceScreen()
-        let targetW = resetWidth ? defaultPartitionWidth : CGFloat(config.num("width", of: id))
+        // ⚠️ 宽度按**这个分区所在的屏**算，不能用 defaultPartitionWidth（它走参考屏 = 鼠标所在屏）。
+        // 「自适应」的语义就是归位：哪怕宽度被用户手动拖过，也要回到这块屏的标准宽度。
+        let targetW = resetWidth ? standardPartitionWidth(for: screen)
+                                 : CGFloat(config.num("width", of: id))
         let type = config.str("type", of: id) ?? ""
 
         // 内容高度口径全部集中在 PartitionMetrics（与视图侧的 padding / 行高一一对应）
@@ -2200,14 +2281,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         saveSoon(0.2)
     }
 
-    /// 初始化分区宽度（双击分区右边）：将宽度重置为初始宽度（280），保持高度不变。
+    /// 初始化分区宽度（双击分区右边）：回到**当前宽度模式对应的标准宽度**，保持高度不变。
+    ///
+    /// ⚠️⚠️ 文档曾写「重置为初始宽度（280）」，那**只对固定宽度模式成立**，实际行为按模式分叉：
+    /// - `custom`（固定宽度）→ `Config.customPartitionWidth`，默认 280
+    /// - `auto`（自动宽度）→ `standardPartitionWidth(for: screen)`，**按该分区所在屏幕的宽度均分**
+    ///   （1920 屏得到 364，而非 280）
+    ///
+    /// ⇒ 用户把宽度设成固定 400 之后双击右边，看到的**不是 400** 而是按模式算出的标准宽度。
+    /// 这是既定行为（与「自适应」保持同一口径），此处只把文档校准，别当成 bug 顺手改掉。
     func resetPartitionWidth(_ id: String) {
         guard let panel = panels.first(where: { $0.partitionID == id }) else { return }
         let screen = panel.screen ?? referenceScreen()
-        let targetW = defaultPartitionWidth
+        let targetW = standardPartitionWidth(for: screen)
         let isCollapsed = config.bool("isCollapsed", of: id)
         let h = CGFloat(config.num("height", of: id))
-        let displayH = isCollapsed ? 44 : h
+        let displayH = isCollapsed ? PartitionMetrics.headerHeight : h
 
         // 越过屏幕右边缘时左移 x
         let curX = CGFloat(config.num("x", of: id))
@@ -2248,6 +2337,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let skipped = lockedOnes(ids)
         for id in ids where !isLocked(id) { autoFitHeight(id, resetWidth: false) }
         noteSkippedLocked(skipped.count, action: "自适应高度")
+    }
+
+    /// 「所有分区自适应宽高」：与 `autoFitAll` 的唯一区别是**宽度也归位**。
+    ///
+    /// 用途：把一批被手动拖得宽窄不一的分区一次性拉回各屏的标准宽度
+    /// （每屏按自己的屏宽算，见 `standardPartitionWidth(for:)`）。
+    func autoFitAllIncludingWidth(onScreenID sid: CGDirectDisplayID? = nil) {
+        let scr = resolvedScreen(sid)
+        let ids = partitionIDs(on: scr)
+        let skipped = lockedOnes(ids)
+        for id in ids where !isLocked(id) { autoFitHeight(id, resetWidth: true) }
+        noteSkippedLocked(skipped.count, action: "自适应宽高")
     }
 
     // MARK: - 待办增删改
@@ -2516,7 +2617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let y = CGFloat(config.num("y", of: pid))
                 let h = CGFloat(config.num("height", of: pid))
                 let collapsed = config.bool("isCollapsed", of: pid)
-                let displayH: CGFloat = collapsed ? 44 : h
+                let displayH: CGFloat = collapsed ? PartitionMetrics.headerHeight : h
                 let origin = nativeOrigin(targetScr, x: x, y: y, h: displayH)
                 panel.setFrame(NSRect(origin: origin, size: panel.frame.size), display: true)
             }
@@ -2532,7 +2633,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 分辨率/显示器变化后，把跑到屏幕外的分区拉回来（只纠正越界，不动正常分区）。
     func ensurePartitionsInBounds() {
-        let side: CGFloat = 16, bottom: CGFloat = 16
+        // ⚠️ 边距/间距必须引用 `Layout`，不能自己写数值 —— 见 LayoutEngine.swift 文件头注释。
+        let side = Layout.margin, bottom = Layout.gap
 
         var changed: [(String, CGFloat, CGFloat, NSScreen)] = []
         config.updateQuiet { raw in
@@ -2549,7 +2651,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let h = Config.num(parts[i]["height"])
                 let collapsed = (parts[i]["isCollapsed"] as? Bool) ?? false
                 // 折叠分区按实际高 44 做越界判断/定位（此函数只纠正越界，不参与布局占位）
-                let displayH = collapsed ? 44 : h
+                let displayH = collapsed ? PartitionMetrics.headerHeight : h
                 let x = Config.num(parts[i]["x"])
                 let y = Config.num(parts[i]["y"])
                 // visibleFrame 是 AppKit 左下原点；配置坐标是「屏幕左上原点」的相对距离，
@@ -2576,7 +2678,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let p = panels.first(where: { $0.partitionID == id }) else { continue }
             let h = CGFloat(config.num("height", of: id))
             let collapsed = config.bool("isCollapsed", of: id)
-            let displayH: CGFloat = collapsed ? 44 : h
+            let displayH: CGFloat = collapsed ? PartitionMetrics.headerHeight : h
             let targetOrigin = nativeOrigin(screen, x: nx, y: ny, h: displayH)
             p.setFrame(NSRect(origin: targetOrigin, size: p.frame.size), display: true)
         }
@@ -2585,7 +2687,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 新建分区时找一个不与现有分区重叠的空位（Electron 的自动避让）。
-    /// 按**目标屏当前的对齐模式**找无重叠空位：top/grid 行优先（左上→右下）、
+    /// 按**目标屏当前的对齐模式**找无重叠空位：top 行优先（左上→右下）、
     /// left 列优先（排满一列再换列）、right 从右往左列优先。兜底级联偏移。
     func findFreeSlot(width w: CGFloat, height h: CGFloat,
                       on target: NSScreen? = nil) -> (x: CGFloat, y: CGFloat) {
@@ -2727,14 +2829,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if p === target {
                 p.activateAsNormalWindow()
                 p.orderFrontRegardless()
-                p.makeKey()
             } else {
                 p.deactivateToDesktop()
             }
         }
         // 记下「谁被临时抬起来了」：只有被记录的那一个会在失去 key 时自己降回去
         raisedPanelID = target.partitionID
+        // ⚠️ **顺序是生死线，不能调回来**：`NSApp.activate` 是**异步**的（要等下一轮 runloop
+        // 才真正把应用切到前台），在它**之前**调用 `makeKey()` 会被系统就地回滚 ——
+        // 实测结果是：分区 `isKeyWindow` 仍然 false，key window 被顶栏面板（TopBarPanel）拿走，
+        // 于是分区一条 keyDown 都收不到，⌘X / ⌘C / ⌘V 全线失效且再也不自己恢复。
+        // 所以必须：先 activate → 再 makeKey → 下一拍再补一次（防 appDidBecomeActive 里被抢）。
         NSApp.activate(ignoringOtherApps: true)
+        target.makeKey()
+        DispatchQueue.main.async { target.makeKey() }
         // 选区只活在「正在操作的那个分区」里：其余分区收到后各自清空自己的选中
         // （判据是纯函数 `FileSelectionScope.shouldClear`，别在这里手写比较）。
         NotificationCenter.default.post(name: .portalActivePartitionChanged,
@@ -2820,6 +2928,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if e.type == .leftMouseDown, let w = e.window as? PartitionPanel {
                 // 左键点击分区：激活应用并动态切换图层，使选中的未置顶分区升至 normal 覆盖普通应用，置顶分区依然在其上
                 self?.activatePartition(w)
+                // ⚠️ 顺序重要：先激活（可能改变 key 状态），再按**点击位置**决定要不要放开搜索框焦点。
+                self?.releaseTextFocusIfNeeded(in: w, clickAt: e.locationInWindow)
             } else if e.type == .rightMouseDown, let w = e.window as? PartitionPanel {
                 // 右键点击分区：仅提升图层以防被遮挡，绝不能在此执行 makeKey / NSApp.activate，
                 // 否则会触发应用激活和 key 窗口焦点切换，打断刚刚建立的上下文菜单追踪循环（产生菜单闪现）。

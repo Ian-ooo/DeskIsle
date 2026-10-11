@@ -7,7 +7,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
-using DeskIsle.Controls;
 using DeskIsle.Models;
 using DeskIsle.Native;
 using DeskIsle.Services;

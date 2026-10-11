@@ -150,7 +150,6 @@ namespace DeskIsle.Views
             AlignTopBtn.IsChecked = mode == "top";
             AlignLeftBtn.IsChecked = mode == "left";
             AlignRightBtn.IsChecked = mode == "right";
-            AlignGridBtn.IsChecked = mode == "grid";
         }
 
         // MARK: - 常规条
@@ -161,7 +160,6 @@ namespace DeskIsle.Views
         private void AlignTop_Click(object sender, RoutedEventArgs e) => _onAlign("top");
         private void AlignLeft_Click(object sender, RoutedEventArgs e) => _onAlign("left");
         private void AlignRight_Click(object sender, RoutedEventArgs e) => _onAlign("right");
-        private void AlignGrid_Click(object sender, RoutedEventArgs e) => _onAlign("grid");
         private void Settings_Click(object sender, RoutedEventArgs e) => _onOpenSettings();
         private void HideTopBar_Click(object sender, RoutedEventArgs e) => _onHideTopBar();
         private void Quit_Click(object sender, RoutedEventArgs e) => _onQuit();

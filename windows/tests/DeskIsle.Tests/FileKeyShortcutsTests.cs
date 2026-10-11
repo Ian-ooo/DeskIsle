@@ -22,6 +22,7 @@ namespace DeskIsle.Tests
             Assert.Equal(FileKey.A, FileKeyShortcuts.FromName("a"));
             Assert.Equal(FileKey.A, FileKeyShortcuts.FromName("A")); // 大小写不敏感
             Assert.Equal(FileKey.V, FileKeyShortcuts.FromName("v"));
+            Assert.Equal(FileKey.Z, FileKeyShortcuts.FromName("z"));
             Assert.Equal(FileKey.Space, FileKeyShortcuts.FromName(" "));
             Assert.Equal(FileKey.Space, FileKeyShortcuts.FromName("Space"));
             Assert.Equal(FileKey.Escape, FileKeyShortcuts.FromName("escape"));
@@ -70,6 +71,17 @@ namespace DeskIsle.Tests
             Assert.Equal(FileKeyAction.Paste, FileKeyShortcuts.Action(FileKey.V, true, 0, FileKeyLayout.Mac));
             Assert.Equal(FileKeyAction.Paste, FileKeyShortcuts.Action(FileKey.V, true, 3, FileKeyLayout.Mac));
             Assert.Equal(FileKeyAction.None, FileKeyShortcuts.Action(FileKey.V, false, 0, FileKeyLayout.Pc));
+        }
+
+        [Fact]
+        public void UndoDoesNotDependOnSelection()
+        {
+            // 撤销的是「上一次操作」，不是「选中的东西」—— 所以跟选区无关。
+            Assert.Equal(FileKeyAction.Undo, FileKeyShortcuts.Action(FileKey.Z, true, 0, FileKeyLayout.Mac));
+            Assert.Equal(FileKeyAction.Undo, FileKeyShortcuts.Action(FileKey.Z, true, 3, FileKeyLayout.Pc));
+            Assert.Equal(FileKeyAction.None, FileKeyShortcuts.Action(FileKey.Z, false, 3, FileKeyLayout.Mac));
+            Assert.True(FileKeyShortcuts.Action(FileKey.Z, true, 1, FileKeyLayout.Mac, shift: true) == FileKeyAction.None,
+                "Ctrl+Shift+Z 是「重做」一类别的意图，语义相反，绝不接管");
         }
 
         // MARK: - 删除：mac 与 pc 的键位习惯不同

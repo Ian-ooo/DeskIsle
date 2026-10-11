@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using DeskIsle.Native;
@@ -457,6 +456,11 @@ namespace DeskIsle.Controls
                     PasteInto(currentDir, afterChange);
                     return true;
 
+                case FileKeyAction.Undo:
+                    // 撤销栈目前只在 mac 端落地（`mac/Sources/DeskIsle/FileUndo.swift`）。
+                    // 这里刻意不吞掉：在本端实现之前，Ctrl+Z 交还 WPF，比「装作生效却什么都没发生」好。
+                    return false;
+
                 default:
                     return false;
             }
@@ -469,6 +473,7 @@ namespace DeskIsle.Controls
             Key.C => "c",
             Key.X => "x",
             Key.V => "v",
+            Key.Z => "z",
             Key.Escape => "escape",
             Key.Return => "enter",
             Key.F2 => "f2",

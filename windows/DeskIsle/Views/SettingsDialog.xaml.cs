@@ -531,7 +531,6 @@ namespace DeskIsle.Views
         {
             "left" => "左侧纵向",
             "right" => "右侧纵向",
-            "grid" => "网格平铺",
             _ => "顶部横向"
         };
 

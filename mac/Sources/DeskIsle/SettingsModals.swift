@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import DeskIsleCore
 import DeskIsleLayout   // PartitionLook：分区外观的默认/值域/模糊档位（三端同口径）
 
 // MARK: - 模态面板统一尺寸
@@ -1142,7 +1141,6 @@ struct GlobalSettingsView: View {
         switch mode {
         case "left": return "左侧纵向"
         case "right": return "右侧纵向"
-        case "grid": return "网格平铺"
         default: return "顶部横向"
         }
     }
@@ -1269,18 +1267,27 @@ struct GlobalSettingsView: View {
 
                         ZStack(alignment: .leading) {
                             if config.partitionWidthMode == "auto" {
-                                HStack {
-                                    Text("按当前屏幕宽度自动计算 (间距 16pt):")
+                                let perScreen = AppDelegate.shared?.perScreenStandardWidths ?? []
+                                // 多显示器时每屏宽度不同（宽度是本屏宽度的函数），逐屏列出，
+                                // 否则用户只能看到「当前这一块屏」的值，换屏后以为宽度被改了。
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("按每块屏幕的宽度自动计算（间距 16pt，列数 \(config.maxColumns)）：")
                                         .font(.system(size: 11))
                                         .foregroundStyle(.secondary)
-                                    Spacer()
-                                    let curW = Int(AppDelegate.shared?.defaultPartitionWidth ?? 280)
-                                    Text("\(curW) pt")
-                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(Color.accentColor)
+                                    ForEach(Array(perScreen.enumerated()), id: \.offset) { _, s in
+                                        HStack(spacing: 6) {
+                                            Text(s.name)
+                                                .font(.system(size: 11))
+                                            Spacer()
+                                            Text("\(Int(s.width)) pt")
+                                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                                .foregroundStyle(Color.accentColor)
+                                        }
+                                    }
                                 }
                                 .padding(.horizontal, 12)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
                             } else {
                                 HStack(spacing: 8) {

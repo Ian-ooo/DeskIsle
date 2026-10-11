@@ -25,8 +25,8 @@ struct LayoutPreset: Equatable {
 
     let name: String
     let screenID: CGDirectDisplayID
-    /// 保存时该屏的对齐模式。应用后顶栏的 align 高亮态要跟着它走，否则界面显示「网格平铺」
-    /// 而实际布局是「右侧纵向」，用户下次点对齐会突然跳变，像是布局被改坏了。
+    /// 保存时该屏的对齐模式。应用后顶栏的 align 高亮态要跟着它走，否则界面显示的
+    /// 是另一种模式而实际布局是「右侧纵向」，用户下次点对齐会突然跳变，像是布局被改坏了。
     let alignMode: String
     let entries: [Entry]
     let savedAt: Date

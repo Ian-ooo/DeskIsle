@@ -23,7 +23,7 @@
 > 
 > - **macOS 原生版（`mac/`）是唯一基线**：新特性首先在 macOS 端落地验证，Windows 端（`windows/`）以此为准绳进行算法与行为对齐。
 > - **两端同源共享契约**：严格遵循同一套统一间距常数（`margin=16`, `gap=16`）、相对屏坐标口径与 Schema v3 配置规范。
-> - **全环境测试护栏**：macOS 端配备 179 项自动化测试；Windows 核心逻辑经由跨平台链接编译，在 macOS 开发机上即可通过 .NET 8 运行 102 项单元测试，配合 `scripts/crosscheck/run.sh` 实行 15 组布局场景逐点对拍。
+> - **全环境测试护栏**：macOS 端配备 **202** 项自动化测试；Windows 核心逻辑经由跨平台链接编译，在 macOS 开发机上即可通过 .NET 8 运行 **140** 个测试用例（96 个 `[Fact]` + 9 个 `[Theory]` 展开的 44 组数据），配合 `scripts/crosscheck/` 对 Swift / C# / Python 三端实行 **12** 组布局场景逐点对拍。
 
 ---
 
@@ -49,7 +49,7 @@
    - [4.4 浮岛空间窗口系统 (Spatial Window Engine)](#44-浮岛空间窗口系统-spatial-window-engine)
    - [4.5 顶端灵动中枢与全局效率工具 (Island Dock & Global Tools)](#45-顶端灵动中枢与全局效率工具-island-dock--global-tools)
 5. [📐 数学布局引擎与列平衡算法](#5-数学布局引擎与列平衡算法)
-   - [5.1 四大对齐模式与几何规范](#51-四大对齐模式与几何规范)
+   - [5.1 三大对齐模式与几何规范](#51-三大对齐模式与几何规范)
    - [5.2 动态规划保序列均衡算法 (DP Column Balancing)](#52-动态规划保序列均衡算法-dp-column-balancing)
    - [5.3 镜像反射与读序解耦定理](#53-镜像反射与读序解耦定理)
 6. [🛡️ 可靠性、容灾与防陷阱工程](#6-可靠性容灾与防陷阱工程)
@@ -125,7 +125,7 @@ flowchart TD
     subgraph Layer2 ["第 2 层：数学几何与布局引擎 (Layout Engine)"]
         Layout["DeskIsleLayout / LayoutEngine.cs"]
         Layout --> L1["DP Column Balancing: 保序连续动态规划列均衡"]
-        Layout --> L2["Grid / Column Placements: 四大对齐坐标计算"]
+        Layout --> L2["Column Placements: 三大对齐坐标计算"]
         Layout --> L3["SnappedPosition: 边缘磁吸与顶栏避让吸附"]
         Layout --> L4["PartitionMetrics: 内容排版高度与字体标定"]
     end
@@ -154,8 +154,9 @@ flowchart TD
 #### 1. 统一几何间距契约
 - **屏幕外边距**：`margin = 16`
 - **分区间距**：`gap = 16`
-- **磁吸阈值**：`snapThreshold = 12`
-- **顶栏吸附余量**：吸附顶栏时保留 `topMargin = 16` 避让空间
+- **磁吸阈值**：`snapThreshold = 16`（两端一致；拖动停止后距目标边缘 16pt 以内即贴合，按住 Alt 跳过）
+- **顶栏避让量**：顶栏**完整高度** = `topInset(40) + 顶栏高(44) + 底部间隙(16)` = **100**；顶栏隐藏时回退 **24**。
+  ⚠️ 别把它当成「16」—— 16 只是其中最后一段 bottomGap。
 
 #### 2. 相对屏坐标体系
 所有分区的坐标 `(x, y)` 均**以其所属显示器的可用工作区（VisibleFrame / WorkingArea）左上角为相对原点**，并附带该屏标识 `screenId`。多屏拖动时，在跨越屏幕边界的瞬间重算相对坐标并更新 `screenId`。
@@ -169,9 +170,13 @@ macOS 端为**唯一规范写入端**，Windows 端支持规范写入并对历�
 | 折叠悬停展开 | `hoverPeekCollapsed` | `hoverPreview` |
 | 全局显隐快捷键 | `globalShortcut` | `globalHotkey` |
 | 全局搜索快捷键 | `searchShortcut` | `searchHotkey` |
-| 自动收件开关 | `autoIngest` | `enabled` |
-| 递归扫描 | `recursive` | `includeSubfolders` |
-| 最大显示项数 | `maxCount` | `limit` |
+| 布局锁定（按屏） | `lockedByScreen` | `isLayoutLocked` |
+| 顶栏显隐（按屏） | `topBarByScreen` | `showTopBar` |
+| 对齐模式（按屏） | `alignModeByScreen` | `alignMode` |
+
+> ⚠️ 表中只列**两端都真实存在**的键。列数上限、列高方向、分区宽度模式等
+> （`maxColumns` / `topHeightOrder` / `partitionWidthMode` / `customPartitionWidth`）
+> 两端**同名同义**，不需要也不存在历史键名映射，故不在此表。
 
 #### 4. 分区高度口径契约
 
@@ -192,10 +197,10 @@ macOS 端为**唯一规范写入端**，Windows 端支持规范写入并对历�
 ### 2.3 领域模型与可测性设计
 
 在 macOS 端，由于 SwiftPM 的可执行 Target（`executableTarget`）无法直接被测试 Target（`testTarget`）导入，项目特意将全部纯计算业务下沉为两个独立的静态类库：
-- [`DeskIsleCore`](file:///Users/yang/Documents/myself/DeskIsle/mac/Sources/DeskIsleCore)：状态机、选择判据、文件类型、搜索打分。
-- [`DeskIsleLayout`](file:///Users/yang/Documents/myself/DeskIsle/mac/Sources/DeskIsleLayout)：几何排列、DP 均衡分组算法、自适应尺寸标定。
+- [`DeskIsleCore`](file:///Users/yang/Documents/myself/project/DeskIsle/mac/Sources/DeskIsleCore)：状态机、选择判据、文件类型、搜索打分。
+- [`DeskIsleLayout`](file:///Users/yang/Documents/myself/project/DeskIsle/mac/Sources/DeskIsleLayout)：几何排列、DP 均衡分组算法、自适应尺寸标定。
 
-在 Windows 端，为了能够在非 Windows 系统（如开发机 macOS、Linux CI）上直接执行 `dotnet test`，测试工程 [`DeskIsle.Tests`](file:///Users/yang/Documents/myself/DeskIsle/windows/tests/DeskIsle.Tests/DeskIsle.Tests.csproj) 采用标准 `net8.0`（而非 `net8.0-windows`），通过 MSBuild 链接编译（`Compile Include ... Link`）拉取与主工程完全同源的无 UI 依赖核心类库。
+在 Windows 端，为了能够在非 Windows 系统（如开发机 macOS、Linux CI）上直接执行 `dotnet test`，测试工程 [`DeskIsle.Tests`](file:///Users/yang/Documents/myself/project/DeskIsle/windows/tests/DeskIsle.Tests/DeskIsle.Tests.csproj) 采用标准 `net8.0`（而非 `net8.0-windows`），通过 MSBuild 链接编译（`Compile Include ... Link`）拉取与主工程完全同源的无 UI 依赖核心类库。
 
 ---
 
@@ -203,14 +208,14 @@ macOS 端为**唯一规范写入端**，Windows 端支持规范写入并对历�
 
 ### 3.1 环境要求与依赖
 
-- **macOS 构建**：macOS 14.0+，Xcode 15.0+（含命令行工具 Command Line Tools），Swift 5.9+。无任何外部 CocoaPods 或 Carthage 依赖。
+- **macOS 构建**：macOS 13.0+（`Package.swift` 声明 `.macOS(.v13)`），Xcode 15.0+（含命令行工具 Command Line Tools），Swift 5.9+。无任何外部 CocoaPods 或 Carthage 依赖。
 - **Windows 构建**：Windows 10 1809+ / Windows 11，.NET 8.0 SDK。
 - **macOS 开发机交叉调试 Windows 测试**：已安装用户级 .NET 8 SDK（`~/.dotnet`）。
 
 ### 3.2 macOS 原生版构建、打包与测试
 
 ```bash
-# 1. 运行核心算法与状态机测试套件（179 条断言）
+# 1. 运行核心算法与状态机测试套件（202 项）
 swift test --package-path mac
 
 # 2. 编译 Debug 版本并本地运行
@@ -239,7 +244,7 @@ export PATH="$HOME/.dotnet:$PATH"
 # 编译 Windows 整体工程（验证无语法与类型错误）
 dotnet build windows/DeskIsle.sln -v minimal
 
-# 执行 Windows 跨平台测试套件（102 项单元测试）
+# 执行 Windows 跨平台测试套件（140 个用例）
 dotnet test windows/tests/DeskIsle.Tests/DeskIsle.Tests.csproj
 ```
 
@@ -258,9 +263,15 @@ bash scripts/crosscheck/run.sh
 ```
 
 **运行原理**：
-1. 编译运行 macOS 真实实现 Target `CrosscheckDump`，输出 15 个复杂场景下的计算 JSON。
+1. 编译运行 macOS 真实实现 Target `CrosscheckDump`，输出 **12** 个场景（3 组初值 × 模式）的计算 JSON。
 2. 运行 Windows `LayoutEngine.cs` 的全真直译 Python 脚本，生成对应场景计算 JSON。
 3. 对拍脚本逐个比对坐标、列高与分组结果，判定两端算法逻辑是否保持 100% 绝对一致。
+
+> ⚠️ 场景数从早期的 15 组降为 **12** 组：随「网格规整排列 `grid`」模式于 2026-10-11 下线，
+> 其专属对照场景一并移除。`top` 模式额外覆盖 `leftToRight` / `rightToLeft` 两个方向。
+>
+> ⚠️ **改了 Windows 端必须同步 `csharp-crosscheck.py`** —— 它是 `LayoutEngine.cs` 的逐行直译，
+> 比对的是那份直译而非磁盘上的 C#。忘了同步就会得到「对拍通过」的假象。
 
 ---
 
@@ -289,7 +300,16 @@ DeskIsle 系统全景
   1. **路径所有权过滤（`PathOwnership.affectsListing`）**：只有事件路径属于当前分区正在浏览的目录层级时，才触发视图刷新；深层无关目录直接忽略。
   2. **0.2 秒事件防抖合流（Debounce）**：将密集触发的多条底层文件系统事件合并为单次批量刷新。
 - **兜底通道：3 节拍轻量级轮询**：
-  在网络挂载盘（SMB/NFS）或不支持 FSEvents 的特殊外置介质中，自动启用 2 秒级轻量 `stat` 探测，并在 30 秒周期对文件大小与修改时间进行指纹校验，确保外部改动绝不漏网。
+  在网络挂载盘（SMB/NFS）或不支持 FSEvents 的特殊外置介质中自动降级为 `stat` 轮询。**周期是双档自适应的**：
+
+  | 状态 | 快速探测（增删改名） | 低频指纹（内容/大小） |
+  |---|---|---|
+  | FSEvents 流健康（正常路径） | **10s** | **120s** |
+  | 流未建立（纯轮询回退） | 2s | 30s |
+
+  ⚠️ 流健康时用 10s 而非 2s：FSEvents 已在 0.15s 延迟内投递事件，2s 轮询是纯重复劳动
+  （只贡献每秒 0.5 次唤醒），故放宽；只有流建立失败才恢复 2s 以保证行为与改造前一致。
+  另有两条护栏：相邻两次指纹计算最小间隔 **25s**、目录条目超过 **500** 项直接放弃指纹（全量 `stat` 代价高于收益）。
 
 #### 2. 键盘即时跳转 (Type-to-Select) 与动态网格导航
 无需手动打开搜索框，聚焦分区后直接在键盘打字即可快速定位：
@@ -396,13 +416,16 @@ stateDiagram-v2
 - **双击标题栏**：进入行内重命名模式（限制最大 10 个字符）。
 
 #### 4. 智能边缘磁吸与顶栏避让吸附 (Snapped Position)
-- 自由拖拽分区时，在距屏幕边缘或相邻分区 **12px** 阈值内产生自然磁力吸附。
-- **顶栏下沿对齐避让**：靠近顶部悬浮顶栏底边时，系统自动计入 `topMargin = 16`，保证吸附时不与顶栏重叠。
+- 自由拖拽分区时，在距屏幕边缘或相邻分区 **16pt** 阈值内产生自然磁力吸附（两端一致）。
+- **顶栏下沿对齐避让**：靠近顶部悬浮顶栏底边时，系统自动计入**顶栏完整高度 100pt**
+  （`topInset 40 + 顶栏 44 + 间隙 16`；顶栏隐藏时为 24），保证吸附时不与顶栏重叠。
 - **按住 Option / Alt**：临时跳过磁力吸附，实现像素级自由摆放。
 
 #### 5. 平滑折叠动画与悬停展开 (Hover Peek)
 - **0.20 秒 Ease-In-Out 动画**：双击折叠按钮时，窗口高度在 0.2 秒内平滑过渡，仅收敛为 44pt 高度的精致胶囊条。
-- **悬停临时预览**：鼠标悬停在已折叠的分区标题栏上超过 200ms，浮岛自动展开展示完整内容；鼠标移开后自动收拢。
+- **悬停临时预览**：鼠标悬停在已折叠的分区标题栏上时，浮岛**立即**展开展示完整内容；鼠标移开后自动收拢。
+  ⚠️ 此路径**没有 200ms 延时**（直接同步触发）。项目中唯一与悬停相关的 0.45s 延时只作用于
+  「拖拽到标题栏」的 spring-load 展开（`isHeaderDropTargeted`），与本条不是同一条代码路径。
 
 #### 6. 全链路操作锁定机制
 点击锁形按钮或按屏锁定时，全链路拦截**拖动、缩放、双击自适应、折叠、删除**等所有改变布局的操作，并提供瞬时优雅 Toast 提示，防止日常使用误触打乱桌面。
@@ -451,16 +474,25 @@ stateDiagram-v2
 
 ## 5. 数学布局引擎与列平衡算法
 
-DeskIsle 的核心排版算法位于独立的 [`DeskIsleLayout`](file:///Users/yang/Documents/myself/DeskIsle/mac/Sources/DeskIsleLayout) 模块与 Windows `LayoutEngine.cs`。
+DeskIsle 的核心排版算法位于独立的 [`DeskIsleLayout`](file:///Users/yang/Documents/myself/project/DeskIsle/mac/Sources/DeskIsleLayout) 模块与 Windows `LayoutEngine.cs`。
 
-### 5.1 四大对齐模式与几何规范
+### 5.1 三大对齐模式与几何规范
+
+> ⚠️ 曾经的第四种模式 `grid`（网格平铺自适应）已于 2026-10-11 下线：它与 `top` 的排布差异极小
+> （同样贴顶、同样按列均分），却要多维护一套行优先分支。UI 入口已移除；
+> 老配置里存着的 `grid` 由 `LayoutEngine.normalizedAlignMode` 自动归一化成 `top`。
 
 | 模式标识 | 名称 | 排布特征 | 入口位置 |
 |---|---|---|---|
 | `top` | **顶部横向排序** | 列优先、严格阶梯式高度均衡降序、宽度范围内尽量多列 | 顶栏对齐按钮 |
-| `left` | **左侧纵向对齐** | 严格贴左、最少列数纵向长列对齐 | 顶栏对齐按钮 |
-| `right` | **右侧纵向对齐** | `left` 的严格几何镜像反射，最少列数贴右对齐 | 顶栏对齐按钮 |
-| `grid` | **网格平铺自适应** | 行优先网格，自左向右均匀平铺换行 | 托盘菜单高级项 |
+| `left` | **左侧纵向对齐** | 严格贴左、**最少列数**逐列填满，再把各列按列高降序摆开 ⇒ 最左一列最高，自左向右递减 | 顶栏对齐按钮 |
+| `right` | **右侧纵向对齐** | `left` 的严格几何镜像反射 ⇒ 最右一列最高，自右向左递减（自左向右递增） | 顶栏对齐按钮 |
+
+> **列高方向的历史变更（2026-10-11）**：`left` / `right` 此前只做「逐列填满」，
+> 于是贴边那一列未必是最高的 —— 真实配置（670 / 388 / 314，可用高 940）下
+> 贴边的第一列是 670，第二列反而到 718。
+> 「每列尽量填满」与「自左向右递减」在数学上互斥（670 那列已塞满也无法更高），
+> 用户选择了后者：改为把列**按列高降序摆开**，分组内容与最少列数都不变，只换列的左右顺序。
 
 ---
 
@@ -478,13 +510,13 @@ cost(P) = (极差 Range, 方向违例 Direction Violations, 高度平方和 Sum 
    - 对于 `left` / `right` 模式：计算在每列不超过可用高度前提下的**最少列数**。
 2. **状态转移设计**：
    为了准确计算极差与方向违例，状态必须感知前一列的起止边界。DP 状态定义为 `(列数 k, 本组起点 i, 本组终点 j)`，在 $O(k \cdot n^3)$ 时间内求得绝对最优解。
-3. **降序阶梯摆开（`top` 模式专属）**：
+3. **降序阶梯摆开（`top` / `left` / `right` 三模式通用）**：
    分组求解完成后，各列按实际列高从高到矮降序排布，形成视觉上赏心悦目的阶梯感。
 
 ```
 真实 7 分区排版列高对比 (高度: 316, 150, 150, 150, 314, 428, 610)
-  传统网格 (极差 626):  | 942 | 942 | 316 | 316 | 316 |
-  顶部对齐 (极差 294):  | 610 | 480 | 428 | 316 | 316 |  <-- 严格无断层阶梯
+  贪心顺序分组 (极差 366):  | 1042 | 1092 | 836 | 726 | 776 |
+  DP 均衡分组 (极差 294):  | 610 | 480 | 428 | 316 | 316 |  <-- 严格无断层阶梯
 ```
 
 ---
@@ -498,9 +530,12 @@ cost(P) = (极差 Range, 方向违例 Direction Violations, 高度平方和 Sum 
 DeskIsle 确立了**保镜像原则**：
 - `right` 模式被严格定义为 `left` 的几何反射：
   $$X_{\text{right}} = \text{Screen Width} - X_{\text{left}} - \text{Width}$$
-- **读序解耦法则**：
-  - `left` / `right` 模式由当前浮岛「贴靠哪一侧」决定读序来源，保证连点幂等。
-  - `top` 模式的列在空间上已按高矮重排，其实体几何顺序已不再代表读序，因此 `top` 模式**固定以配置存储顺序为稳定输入**，杜绝连点二次漂移。
+- **读序解耦法则**（2026-10-11 起统一）：
+  - **三种模式一律固定以「配置存储顺序」为读序**，与当前布局的几何位置无关。
+  - ⚠️ 原因：三种模式都会把列**按列高降序摆开**，落位后「列在空间上的左右顺序」已不再等于读序。
+    若再按几何位置读回序列，读到的就是「按列高排过序」的另一条序列，分组随之漂移，
+    连点同一个按钮会越排越歪（`top` 当年踩过同一个坑，3 列的排布会掉成 2 列）。
+  - ⚠️ 代价：手动拖动造成的视觉顺序不再影响自动排布的分组结果 —— 这正是「不被上一次排布牵着走」的代价。
 
 ---
 
@@ -545,11 +580,11 @@ flowchart LR
 #### 坑 2：AppKit 倒置坐标系与全局鼠标监视器漂移
 - **现象**：在多显示器排列复杂的 Mac 上，浮岛的鼠标穿透判定发生严重偏移。
 - **根因**：AppKit 原生坐标系以主屏左下角为 `(0, 0)` 且 Y 轴向上，而 `CGDisplayBounds` 与全局鼠标事件坐标系以主屏左上角为 `(0, 0)` 且 Y 轴向下。
-- **治理规范**：在 [`PartitionPanel.swift`](file:///Users/yang/Documents/myself/DeskIsle/mac/Sources/DeskIsle/PartitionPanel.swift) 中统一建立屏幕坐标转换流水线，所有命中测试与磁吸判定均在归一化局部坐标系中完成。
+- **治理规范**：在 [`PartitionPanel.swift`](file:///Users/yang/Documents/myself/project/DeskIsle/mac/Sources/DeskIsle/PartitionPanel.swift) 中统一建立屏幕坐标转换流水线，所有命中测试与磁吸判定均在归一化局部坐标系中完成。
 
 #### 坑 3：应用内独立剪贴板与系统访达剪贴板互串
 - **现象**：在浮岛内剪切了文件，去访达粘贴时意外将文件落到了外部；或在访达复制了文本，在浮岛内粘贴却删除了原文件。
-- **治理规范**：彻底禁用系统共享剪贴板，构建进程级单例 [`FileClipboard`](file:///Users/yang/Documents/myself/DeskIsle/mac/Sources/DeskIsle/FileOperations.swift)，剪贴操作严格自闭环。
+- **治理规范**：彻底禁用系统共享剪贴板，构建进程级单例 [`FileClipboard`](file:///Users/yang/Documents/myself/project/DeskIsle/mac/Sources/DeskIsle/FileOperations.swift)，剪贴操作严格自闭环。
 
 #### 坑 4：拖拽文件误入子文件夹灾难
 - **现象**：用户本意是将文件拖入分区当前目录，鼠标划过某个子文件夹条目时松手，文件悄然钻入深层子目录造成「文件离奇丢失」。
@@ -611,6 +646,13 @@ flowchart LR
 | `↑` / `↓` / `←` / `→` | **网格导航** | 按实际列宽几何跳转选中项 |
 | 任意字母字符 | **即时跳转** | 0.85s 前缀累积检索或同键循环跳转 |
 
+> ⚠️ 关于「裸按功能键」：录入全局快捷键时，**只有 F1–F12 允许不带修饰键**，其余裸键一律拒绝
+> （防误触），与 Electron `ShortcutRecorder` 的限制一致。
+> **macOS 的功能键码并不连续**（F3=99 插在 F7/F8 之间，F1/F2/F4 远在 118 以上），
+> 因此判定必须按 `kVK_*` 逐个枚举。键码表收拢在 `DeskIsleCore.FunctionKeys`，
+> 由 `FunctionKeysTests` 锁死与 Carbon `Events.h` 的对应关系 ——
+> 详见 §7.3「快捷键功能键范围写死为区间」。
+
 #### 3. 鼠标交互与手势
 | 手势操作 | 触发位置 | 产生的行为响应 |
 |---|---|---|
@@ -636,7 +678,9 @@ flowchart LR
 | **文件收集箱（`collection`）** | 2026-10-01 | 「只登记引用、不搬移文件」的逻辑聚合概念与「分区即真实目录」的认知模型强冲突。引用失效清理逻辑臃肿。 | 将收纳哲学收敛为单一强心智模型：**分区即真实磁盘目录**。遗留配置在读盘时由 `RemovedPartition` 幂等静默剔除。 |
 | **智能规则归类箱（`smart`）** | 2026-10-01 | 缺乏真实高频落地场景，规则匹配在复杂工作流下极易造成意外文件移动。 | 保持产品极简克制，去除不成熟的过度自动化设计。 |
 | **桌面空白处右键菜单接管** | 2026-09-29 | 抢占桌面系统全局事件破坏原生 macOS/Windows 操作习惯，引起用户困惑。 | 确立「绝不污染和抢夺系统原生桌面交互」的核心原则。 |
-| **Windows 死代码 `BalanceColumns`** | 2026-09-30 | 历史上残留的贪心 2-Opt 搜索算法从未被实际调用，且与 macOS 列式 DP 不对齐。 | 统一由双端同源的保序 DP 均衡算法接管。 |
+| **Windows 死代码 `BalanceColumns`** | 2026-09-30 移除调用，**2026-10-11 删除实现** | 历史上残留的贪心 2-Opt 搜索算法从未被实际调用，且与 macOS 列式 DP 不对齐。它包装的 `BalancedColumnRanges`（真正在用的保序 DP）已完整保留全部设计注释，删除不影响任何行为。 | 统一由双端同源的保序 DP 均衡算法接管。**教训**：保序 DP 为什么不能用贪心、状态为何要带「本组起点」，这些知识都写在**被保留的那个函数**上 —— 删代码前先确认注释跟着活下来了。 |
+| **对齐模式 `grid`（网格规整排列）** | 2026-10-11 | 与 `top` 排布差异极小（都贴顶、都按列均分），却要多维护一套行优先分支。 | 老配置里存着的 `grid` 由三端 `normalizedAlignMode` / `NormalizeAlignMode` / `normalize_align_mode` 统一回退成 `top`，并有测试锁定「传 `grid` 与传 `top` 的排布结果逐坐标相同」。 |
+| **快捷键功能键范围写死为区间** | 2026-10-11 修正 | macOS 功能键码**并不连续**（F3=99 插在 F7/F8 之间，F1/F2/F4 远在 118 以上）。原实现 `(96...111)` 看着像「F1–F12」，实际**漏掉 F1/F2/F4 却放行了 F13/F14/F16** —— 配置里写 `"F1"` 会被静默丢弃并退回默认键；`fileKeyName` 还把 `"f2"` 挂在 `case 96`（那是 F5），导致「按 F2 不重命名、按 F5 才重命名」。 | 键码表收拢到 `DeskIsleCore.FunctionKeys`（纯 Foundation、可单测），逐个数字标注其对应的 `kVK_*`，并由 `FunctionKeysTests` 锁死 12 个键码与 Carbon `Events.h` 对齐。**教训**：无规律的魔数必须与「出处」写在同一行，否则下一个人只会照抄。 |
 
 ---
 

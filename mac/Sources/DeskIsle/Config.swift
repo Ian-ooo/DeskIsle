@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import CoreGraphics
 import DeskIsleCore
+import DeskIsleLayout   // LayoutEngine.normalizedAlignMode：排列模式归一化
 
 /// 配置的唯一真值：以字典持有原始 JSON，读写全程保留未知字段，
 /// 避免用 Codable 子集重编码时把 Electron 版的字段丢掉。
@@ -343,6 +344,16 @@ final class Config: ObservableObject {
     var settings: [String: Any] { raw["settings"] as? [String: Any] ?? [:] }
 
     var showTopBar: Bool { (settings["showTopBar"] as? Bool) ?? true }
+    /// 「顶部横向排序」的最大列数。
+    ///
+    /// ⚠️⚠️ `[4, 6]` 与默认 **5** 是**三端硬约束**，mac 是这里的**功能基线**：
+    /// - Windows `Models/Config.cs` 的 `MaxColumns` 写明「必须与 macOS `Config.maxColumns`
+    ///   / Electron **完全一致**（4~6，默认 5）。⚠️ 那里曾经是 `Clamp(x, 4, 8)`，
+    ///   跨端导入同一份备份会得到两种布局。
+    /// - `scripts/crosscheck/csharp-crosscheck.py` 的对拍也按此范围校验。
+    ///
+    /// 列数是**所有列式布局（top/left/right）的共同输入**，改这里会静默改变
+    /// 跨端导入的备份在三端各自排成什么样，所以动它之前先想清楚。
     var maxColumns: Int { min(6, max(4, (settings["maxColumns"] as? Int) ?? 5)) }
 
     /// 横排列高方向 —— **只影响「顶部横向排序」（top）**：
@@ -355,6 +366,17 @@ final class Config: ObservableObject {
     }
 
     var partitionWidthMode: String { (settings["partitionWidthMode"] as? String) ?? "auto" }
+    /// 固定宽度模式下，每个分区的目标宽度。
+    ///
+    /// ⚠️ 默认 **280** 是三端共享值，同一个数字还写在：
+    /// `windows/.../Services/LayoutEngine.cs` 的 `DefaultPartitionWidth`、
+    /// `scripts/crosscheck/csharp-crosscheck.py` 的 `DEFAULT_PARTITION_WIDTH`、
+    /// 以及 Windows `Models/Config.cs` 的兜底。改任一处都要同步其余。
+    ///
+    /// ⚠️⚠️ 它与 `PartitionMetrics.autoColumnWidth(minimum: 200)` 里的 **200** 是两套下限：
+    /// 这个 280 管「固定宽度模式」，那个 200 管「自动宽度模式的最小可读宽度」。
+    /// 用户在设置面板切模式时看到的是两套规则，**不要试图把 200 也提到 280** ——
+    /// 那会让窄屏上自适应算不出足够放得下标题的宽度。
     var customPartitionWidth: CGFloat { CGFloat((settings["customPartitionWidth"] as? Double) ?? Double((settings["customPartitionWidth"] as? Int) ?? 280)) }
     var defaultPartitionHeight: CGFloat {
         let val = CGFloat((settings["defaultPartitionHeight"] as? Double) ?? Double((settings["defaultPartitionHeight"] as? Int) ?? 200))
@@ -403,9 +425,12 @@ final class Config: ObservableObject {
     func alignMode(forScreen sid: CGDirectDisplayID) -> String {
         if let table = settings["alignModeByScreen"] as? [String: Any],
            let v = table[String(sid)] as? String, !v.isEmpty {
-            return v
+            return LayoutEngine.normalizedAlignMode(v)
         }
-        return (settings["alignMode"] as? String) ?? "top"
+        let legacy = (settings["alignMode"] as? String) ?? "top"
+        // ⚠️ 曾经的第四种 "grid"（网格平铺）已下线：
+        // 老配置里如果存着它，这里统一翻译成 top，UI 才会正确高亮「顶部横向排序」。
+        return LayoutEngine.normalizedAlignMode(legacy)
     }
 
     /// 通用：读「按屏布尔表」。
@@ -492,11 +517,6 @@ final class Config: ObservableObject {
     /// 指定显示器上的布局预设，按保存时间倒序（最近存的排最前）。
     func layoutPresets(forScreen sid: CGDirectDisplayID) -> [LayoutPreset] {
         allLayoutPresets.filter { $0.screenID == sid }.sorted { $0.savedAt > $1.savedAt }
-    }
-
-    func layoutPreset(named name: String, onScreen sid: CGDirectDisplayID) -> LayoutPreset? {
-        let key = LayoutPreset.key(name: name, screenID: sid)
-        return allLayoutPresets.first { $0.key == key }
     }
 
     /// 新增或覆盖一条预设（同名同屏视为覆盖 —— 「用当前布局更新」走的就是这条）。
