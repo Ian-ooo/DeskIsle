@@ -50,28 +50,40 @@ def key3(max_h, min_h, viol, sq):
     return (max_h - min_h, viol, sq)
 
 
-def greedy_fill_column_ranges(count, gap, height_at, max_group_height):
-    """public static List<(int Start,int End)> GreedyFillColumnRanges(...) 的直译
+def first_fit_column_groups(count, gap, height_at, max_group_height):
+    """public static List<List<int>> FirstFitColumnGroups(...) 的直译
 
-    逐列填满：除最后一列外，每列都是「再塞一条就会超出」的状态。
-    ⚠️ 判空用 i == start 而非 cur == 0（高度为 0 会让后者漏加 gap）。
+    逐列填满（first-fit）：从最靠边那列开始，按配置顺序把**所有还塞得下的**都放进去
+    （塞得下就放、塞不下就跳过、留给下一列），直到「剩下的每一条都塞不下」才开新列。
+    组内下标递增。
+
+    ⚠️ **必须是 first-fit 而不是 next-fit**（2026-10-12 用户反馈修正）：
+    next-fit 遇到塞不下立刻换列，把「后面那些更矮的、本来塞得下的分区」白白留给下一列。
+    真实配置 675/388/240（可用高 964）：next-fit 第一列只有 [675]，
+    first-fit 跳过 388 拉进 240 ⇒ 第一列 [675,240]（675+16+240=931）。
+
+    ⚠️ 判空用 group 是否为空而非 cur == 0（高度为 0 会让后者漏加 gap）。
     """
-    ranges = []
+    groups = []
     if count <= 0:
-        return ranges
-    start = 0
-    cur = 0.0
-    for i in range(count):
-        h = height_at(i)
-        add = h if i == start else h + gap
-        if i > start and cur + add > max_group_height + 1e-9:
-            ranges.append((start, i))
-            start = i
-            cur = h
-        else:
-            cur += add
-    ranges.append((start, count))
-    return ranges
+        return groups
+    remaining = list(range(count))
+    while remaining:
+        group = []
+        cur = 0.0
+        i = 0
+        while i < len(remaining):
+            idx = remaining[i]
+            h = height_at(idx)
+            add = h if not group else h + gap
+            if not group or cur + add <= max_group_height + 1e-9:
+                group.append(idx)
+                cur += add
+                remaining.pop(i)      # 装下了 ⇒ 继续看下一条（不 i += 1）
+            else:
+                i += 1                  # 塞不下 ⇒ 留给后面的列
+        groups.append(group)
+    return groups
 
 
 def balanced_column_ranges(count, columns, gap, height_at,
@@ -200,11 +212,15 @@ def column_heights_of(cols, height_provider, gap):
     return [sum(height_provider(x) for x in c) + max(0, len(c) - 1) * gap for c in cols]
 
 
-def sort_columns_by_height(cols, height_provider, gap):
-    hs = column_heights_of(cols, height_provider, gap)
-    # OrderByDescending(h).ThenBy(i)
-    return [c for _, _, c in sorted(
-        ((i, -hs[i], c) for i, c in enumerate(cols)), key=lambda t: (t[1], t[0]))]
+def column_heights_of_groups(groups, height_at, gap):
+    return [sum(height_at(i) for i in g) + max(0, len(g) - 1) * gap for g in groups]
+
+
+def sort_groups_by_height(groups, height_at, gap):
+    hs = column_heights_of_groups(groups, height_at, gap)
+    # OrderByDescending(h).ThenBy(i) —— 并列保持原读序
+    return [g for _, _, g in sorted(
+        ((i, -hs[i], g) for i, g in enumerate(groups)), key=lambda t: (t[1], t[0]))]
 
 
 def column_placements(sorted_ids, part_map, get_eff_h, get_w,
@@ -214,7 +230,7 @@ def column_placements(sorted_ids, part_map, get_eff_h, get_w,
     """private static ColumnPlacements(...) 的直译
 
     ⚠️ 注意 C# 里 `sortedIds = flat` 会**原地改写被闭包捕获的变量**，
-    Python 里 `HeightAt/WidthAt` 必须每次读最新的 `sorted_ids`（用 nonlocal 语义）。
+    Python 里 `height_at/width_at` 必须每次读最新的 `sorted_ids`（用 nonlocal 语义）。
     """
     if not sorted_ids:
         return {}
@@ -225,7 +241,8 @@ def column_placements(sorted_ids, part_map, get_eff_h, get_w,
     def width_at(i):
         return get_w(part_map[sorted_ids[i]])
 
-    ranges = []
+    # groups = 每列包含哪些下标，**不要求连续**（left/right 的 first-fit 必须能跳过塞不下的）
+    groups = [list(range(len(sorted_ids)))]
     if count_mode == "atMost":
         # ⚠️ 「尽量多列」与「每列不超出屏幕」的对策方向相反（列越多每列越矮）：
         # 高度超了要**加**列，宽度超了才减列。所以先把下限抬到 min_cols。
@@ -243,48 +260,40 @@ def column_placements(sorted_ids, part_map, get_eff_h, get_w,
                     m = max(m, width_at(i))
                 total_w += (m if m > 0 else DEFAULT_PARTITION_WIDTH) + GAP
             total_w -= GAP
-            ranges = candidate
+            groups = [list(range(r[0], r[1])) for r in candidate]
             if total_w <= avail_w or num_cols <= min_cols:
                 break
             num_cols -= 1
     else:
-        # 「左侧 / 右侧纵向对齐」= **逐列填满**（对齐 LayoutEngine.cs 的 GreedyFillColumnRanges）
-        ranges = greedy_fill_column_ranges(
+        # 「左侧 / 右侧纵向对齐」= **逐列填满**（first-fit，对齐 LayoutEngine.cs 的
+        # FirstFitColumnGroups）：塞不下的跳过、留给下一列，直到再也塞不下才开新列。
+        groups = first_fit_column_groups(
             len(sorted_ids), GAP, height_at, avail_h)
 
     if sort_by_height:
-        grouped = [sorted_ids[r[0]:r[1]] for r in ranges]
-        sorted_cols = sort_columns_by_height(grouped, lambda i: get_eff_h(part_map[i]), GAP)
-        flat = [x for c in sorted_cols for x in c]
-        new_ranges = []
-        cursor = 0
-        for c in sorted_cols:
-            new_ranges.append((cursor, cursor + len(c)))
-            cursor += len(c)
-        sorted_ids = flat            # ← 闭包后续读到的就是新的
-        ranges = new_ranges
+        groups = sort_groups_by_height(groups, height_at, GAP)
 
     col_widths = []
-    for r in ranges:
+    for g in groups:
         m = 0.0
-        for i in range(r[0], r[1]):
+        for i in g:
             m = max(m, width_at(i))
         col_widths.append(m if m > 0 else DEFAULT_PARTITION_WIDTH)
 
-    col_x = [0.0] * len(ranges)
+    col_x = [0.0] * len(groups)
     if from_right:
         col_x[0] = (screen_width - MARGIN) - col_widths[0]
-        for c in range(1, len(ranges)):
+        for c in range(1, len(groups)):
             col_x[c] = col_x[c - 1] - GAP - col_widths[c]
     else:
         col_x[0] = MARGIN
-        for c in range(1, len(ranges)):
+        for c in range(1, len(groups)):
             col_x[c] = col_x[c - 1] + col_widths[c - 1] + GAP
 
     result = {}
-    for c, r in enumerate(ranges):
+    for c, g in enumerate(groups):
         cur_y = top_margin
-        for i in range(r[0], r[1]):
+        for i in g:
             _id = sorted_ids[i]
             w = width_at(i)
             x = col_x[c] + (col_widths[c] - w) if from_right else col_x[c]
@@ -328,9 +337,9 @@ def calculate_layout(mode, partitions, screen_width, screen_height,
 
     # ⚠️ 曾经的 "grid"（网格平铺）已下线，未知/旧模式一律归一化成 top，与 Swift / C# 一致。
     # ⚠️ **三个模式一律按配置顺序读**，不用几何位置排读序（与 Swift / C# 一致）。
-    # 历史：left / right 曾按「当前布局贴靠哪一边」从几何反推读序；但现在三种模式都会
-    # 把列按列高降序摆开，落位后「列的空间顺序」不再是读序 —— 再按几何读回来就是另一条
-    # 序列，连点会漂移。改用配置顺序这个与布局无关的稳定来源。
+    # 历史：left / right 曾按「当前布局贴靠哪一边」从几何反推读序；但 top 会把列按列高降序
+    # 摆开，落位后「列的空间顺序」不再是读序 —— 再按几何读回来就是另一条序列，连点会漂移。
+    # 改用配置顺序这个与布局无关的稳定来源。
     sorted_ids = [p["id"] for p in partitions]      # 配置顺序
 
     result = {}
@@ -340,10 +349,12 @@ def calculate_layout(mode, partitions, screen_width, screen_height,
     column_limit = max(4, min(8, max_columns)) if is_top else max_columns
     from_right = (top_height_order.lower() == "righttoleft") if is_top else (lower == "right")
 
+    # ⚠️ 只有 top 才按列高降序摆开；left / right 要「列序 = 填充顺序」，重排会破坏「依次填满」
+    # （2026-10-12 起，与 Swift LayoutEngine.swift / C# LayoutEngine.cs 同步）。
     result.update(column_placements(
         sorted_ids, part_map, get_eff_h, get_w,
         screen_width, avail_h, avail_w, top_margin,
-        from_right, count_mode, column_limit, sort_by_height=True))
+        from_right, count_mode, column_limit, sort_by_height=is_top))
     return result
 
 
@@ -377,6 +388,11 @@ def SCENARIOS():
     # 「每列不超过 availH」所需的最少列数是 6，加列之后才是合规的 1016/900/900/900/900/900。
     # ⚠️ 高度超了要**加**列（与宽度超了减列方向相反）—— 本轮最容易写反的一处。
     TALL = [500, 500, 900, 900, 900, 900, 900]
+    # 场景 4「跳过」（2026-10-12）：first-fit 必须**跳过塞不下的、去捡后面更矮的**。
+    # 675 后面紧跟一条塞不下的 388，再后面有一条塞得下的 240 ——
+    # next-fit 会在这里立刻换列，first-fit 必须跳过 388 把 240 拉进第一列。
+    # 三端只要有一端没改成分组「跳过」，这个场景的列高就会不同。
+    SKIP = [675, 388, 240, 610, 150, 430]
     W = 316
 
     def layout(hs, tag):
@@ -389,7 +405,8 @@ def SCENARIOS():
     base = layout(HS, "t")
     # 贴右版本：每个分区关于屏幕中线镜像（右边距 = 左边距）
     mirrored = [dict(p, x=1920 - (p["x"] - 16) - W) for p in base]
-    return [("贴左初值", base), ("贴右初值", mirrored), ("超高初值", layout(TALL, "s"))]
+    return [("贴左初值", base), ("贴右初值", mirrored), ("超高初值", layout(TALL, "s")),
+            ("跳过初值", layout(SKIP, "k"))]
 
 
 def main():

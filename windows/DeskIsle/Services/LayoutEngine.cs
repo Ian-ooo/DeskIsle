@@ -38,7 +38,7 @@ namespace DeskIsle.Services
         /// 列高的**方向** —— 只在 DP 内部做**并列取舍**（极差并列时沿哪个方向摆更好看）。
         ///
         /// ⚠️ 它**不参与「哪一侧最高」的判定**：那件事由「各列按列高降序摆开」
-        /// （<see cref="SortColumnsByHeight"/>）**恒等保证**，「顶部横向排序」的方向只决定
+        /// （<c>ColumnPlacements</c> 的 1.5 步）**恒等保证**，「顶部横向排序」的方向只决定
         /// 整块贴左还是贴右（<c>fromRight</c>）。历史教训：曾让方向参与分组（两方向各解一次 DP），
         /// 结果两个方向不再是镜像。
         ///
@@ -75,7 +75,7 @@ namespace DeskIsle.Services
         /// 但它需要**两个方向各解一次 DP**，于是同一批分区被切成两套不同的分组 ——
         /// 两个方向**不再互为镜像**，而镜像正是用户明确要求保住的。
         /// 「该侧最高、向另一侧递减或相等」现在由**落位时按列高降序摆开**恒等保证
-        /// （见 <see cref="SortColumnsByHeight"/>），不需要方向参与分组。
+        /// （见 <c>ColumnPlacements</c> 的 1.5 步），不需要方向参与分组。
         ///
         /// **为什么用 DP 而不是贪心**：贪心（「累计超过可用高度就换列」）在单条高度
         /// 远大于均值时会**过早换列**，把余量丢给后面的列。实测 10 条等高分区、可用高 950：
@@ -231,50 +231,81 @@ namespace DeskIsle.Services
         }
 
         /// <summary>
-        /// 「每一列高度都不超过 <paramref name="maxGroupHeight"/>」所需的最少列数。
-        ///
-        /// 贪心即最优：尽量往当前列塞，塞不下才换列，得到的列数一定最少
-        /// （往前面的列多塞只可能减少后续列数）。单条本身超高时它自己独占一列。
-        /// </summary>
-        /// <summary>
-        /// 「逐列填满」的保序分组：与 <see cref="MinimumFeasibleColumnCount"/> 同源同口径，
-        /// 但返回<b>每列的范围</b>。
+        /// 「逐列填满」的 <b>first-fit</b> 分组（<c>left</c> / <c>right</c> 用）。
         /// <para>
-        /// 贪心即最优：尽量往当前列塞，塞不下才换列，所以<b>除最后一列外，每一列都是
-        /// 「再塞一条就会超出 maxGroupHeight」的状态</b> —— 这正是「左侧优先填满」的形式化含义。
+        /// 规则：从最靠边那列开始，按配置顺序把<b>所有还塞得下的</b>分区都放进去
+        /// （塞得下就放、塞不下就跳过、留给下一列），直到「剩下的每一条都塞不下」才开新列。
+        /// 组内下标<b>递增</b>（列内视觉顺序 = 配置顺序）。
+        /// </para>
+        /// <para>
+        /// ⚠️⚠️ <b>为什么必须是 first-fit 而不是 next-fit</b>（2026-10-12 用户反馈修正）：
+        /// next-fit（遇到塞不下立刻换列）会把「后面那些更矮的、本来塞得下的分区」白白留给下一列。
+        /// 用户真实配置（675 / 388 / 240，可用高 964）：
+        /// next-fit ⇒ <c>675+16+388 = 1079 &gt; 964</c> 立刻换列，第一列只剩 <c>[675]</c>；
+        /// first-fit 跳过 388、把 240 拉进来 ⇒ <c>675+16+240 = 931 ≤ 964</c>，
+        /// 第一列是 <c>[675,240]</c>、第二列 <c>[388]</c> —— 这才是「优先填满」的正解。
+        /// </para>
+        /// <para>
+        /// 连带好处：列数<b>不增反减</b>、每列更满。12 条分区实测由 5 列
+        /// [716,932,782,692,240] 收敛到 4 列 [932,912,812,722]。
+        /// </para>
+        /// <para>
         /// 单条本身就超高时它自己独占一列（新一轮的第一条无条件加入，不会被判成超界）。
+        /// 复杂度 O(n²)：分区数是几十的量级、只在点击对齐时跑一次，可忽略。
         /// </para>
         /// <para>
-        /// ⚠️ 判断「当前列是否为空」用 <c>i == start</c> 而不是 <c>cur == 0</c>：
-        /// 高度为 0 的分区会让 cur 停在 0，后者会把后续多条误判成「仍在第一列」而漏加 gap。
+        /// ⚠️ 判「本列是否为空」用 <c>group.Count == 0</c> 而不是 <c>cur == 0</c>：
+        /// 高度为 0 的分区会让 cur 停在 0，后者会把后续多条误判成「放得下」而漏加 gap。
         /// </para>
         /// </summary>
-        public static List<(int Start, int End)> GreedyFillColumnRanges(
+        public static List<List<int>> FirstFitColumnGroups(
             int count, double gap, Func<int, double> heightAt, double maxGroupHeight)
         {
-            var ranges = new List<(int Start, int End)>();
-            if (count <= 0) return ranges;
+            var groups = new List<List<int>>();
+            if (count <= 0) return groups;
 
-            int start = 0;
-            double cur = 0;
-            for (int i = 0; i < count; i++)
+            var remaining = new List<int>();
+            for (int i = 0; i < count; i++) remaining.Add(i);
+
+            while (remaining.Count > 0)
             {
-                double h = heightAt(i);
-                double add = i == start ? h : h + gap;
-                if (i > start && cur + add > maxGroupHeight + 1e-9)
+                var group = new List<int>();
+                double cur = 0;
+                int i = 0;
+                while (i < remaining.Count)
                 {
-                    ranges.Add((start, i));
-                    start = i;
-                    cur = h;
+                    int idx = remaining[i];
+                    double h = heightAt(idx);
+                    double add = group.Count == 0 ? h : h + gap;
+                    if (group.Count == 0 || cur + add <= maxGroupHeight + 1e-9)
+                    {
+                        group.Add(idx);
+                        cur += add;
+                        remaining.RemoveAt(i);   // 装下了 ⇒ 继续看下一条（不 i++）
+                    }
+                    else
+                    {
+                        i++;                // 塞不下 ⇒ 留给后面的列
+                    }
                 }
-                else
-                {
-                    cur += add;
-                }
+                groups.Add(group);
             }
-            ranges.Add((start, count));
-            return ranges;
+            return groups;
         }
+
+        /// <summary>
+        /// 「每一列高度都不超过 <paramref name="maxGroupHeight"/>」所需的<b>保序</b>最少列数。
+        /// <para>
+        /// 贪心即最优：尽量往当前列塞，塞不下才换列，得到的列数一定最少
+        /// （往前面的列多塞只可能减少后续列数）。单条本身超高时它自己独占一列。
+        /// </para>
+        /// <para>
+        /// ⚠️ 这是<b>保序</b>（连续区间）分组下的最少列数，只被「顶部横向排序」当作高度下限用。
+        /// <c>left</c> / <c>right</c> 走的是 <see cref="FirstFitColumnGroups"/>，
+        /// <b>允许跨过塞不下的条目</b>去捡后面更矮的，因此实际列数可能<b>少于</b>本函数返回值
+        /// —— 那不是 bug，是 first-fit 装得更满。
+        /// </para>
+        /// </summary>
 
         public static int MinimumFeasibleColumnCount(
             int count, double gap, Func<int, double> heightAt, double maxGroupHeight)
@@ -308,6 +339,18 @@ namespace DeskIsle.Services
             Func<string, double> heightProvider,
             double gap)
             => cols.Select(col => col.Sum(heightProvider) + Math.Max(0, col.Count - 1) * gap).ToList();
+
+        /// <summary>
+        /// 各列高度 = 列内<b>下标</b>对应高度之和 + 组内间隔（<c>(条数 − 1) × gap</c>）。
+        /// 与 <see cref="ColumnHeightsOf(List{List{string}}, Func{string, double}, double)"/>
+        /// 同口径，只是输入是下标而非 id（分组阶段还没有 id 视图）。
+        /// 与 macOS <c>LayoutEngine.columnHeights</c> 同源。
+        /// </summary>
+        public static List<double> ColumnHeightsOfGroups(
+            List<List<int>> groups,
+            Func<int, double> heightAt,
+            double gap)
+            => groups.Select(g => g.Sum(heightAt) + Math.Max(0, g.Count - 1) * gap).ToList();
 
         /// <summary>
         /// 把各列**按列高降序**排开（并列保持原顺序 —— 显式带上原下标比较，不依赖排序是否稳定）。
@@ -345,7 +388,11 @@ namespace DeskIsle.Services
         {
             /// <summary>尽量多列：列数取上限，再用可用宽度夹一次。「顶部横向排序」用 —— 整体最紧凑、最矮。</summary>
             AtMost,
-            /// <summary>最少列数：刚好做到「每一列高度都不超过可用高度」。「左侧 / 右侧对齐」用 —— 几条纵向长列。</summary>
+            /// <summary>不指定列数：分组时逐列first-fit 填满，塞不下的留给下一列。
+            /// 「左侧 / 右侧对齐」用 —— 列更少、每列更长，是几条纵向长列。
+            /// <para>⚠️ 名字里的 "minimum" 指「以填满为唯一目标」，<b>不是</b>「列数尽量少」：
+            /// first-fit 的列数可能比 <see cref="MinimumFeasibleColumnCount"/> 少，
+            /// 因为后者算的是保序连续分组下的最少列数，而 first-fit 允许跨过塞不下的条目。</para></summary>
             MinimumFeasible
         }
 
@@ -364,7 +411,8 @@ namespace DeskIsle.Services
         /// 分组，两个方向就不再互为镜像、来回切还会互相污染。
         /// </summary>
         /// <param name="fromRight">true 时整块贴右边，且**第一组放在最右**。</param>
-        /// <param name="sortColumnsByHeight"><c>top</c> 传 true：落位前把各列按列高降序摆开。
+        /// <param name="sortColumnsByHeight">落位前把各列按列高降序摆开。
+        /// 仅 <c>top</c> 传 true（<c>left</c>/<c>right</c> 要「列序 = 填充顺序」，不能重排）。
         /// 打开后**列序不再等于读序**，调用方必须传入与布局无关的稳定序列（配置顺序）。</param>
         private static Dictionary<string, (double X, double Y)> ColumnPlacements(
             List<string> sortedIds,
@@ -386,8 +434,10 @@ namespace DeskIsle.Services
             double HeightAt(int i) => getEffH(partMap[sortedIds[i]]);
             double WidthAt(int i) => getW(partMap[sortedIds[i]]);
 
-            // 1. 定列数，并按该列数做一次保序均衡分组
-            List<(int Start, int End)> ranges = new();
+            // 1. 定列数，并按该列数做一次分组
+            //    groups 是「每列包含哪些下标」，**不要求连续** —— left / right 的 first-fit
+            //    必须能跳过塞不下的矮条目，连续区间表达不了（见 FirstFitColumnGroups）。
+            List<List<int>> groups = new() { Enumerable.Range(0, sortedIds.Count).ToList() };
             if (countMode == ColumnCountMode.AtMost)
             {
                 // ⚠️ **「尽量多列」与「每列不超出屏幕」的对策方向是相反的**：
@@ -413,25 +463,34 @@ namespace DeskIsle.Services
                         for (int i = r.Start; i < r.End; i++) m = Math.Max(m, WidthAt(i));
                         return (m > 0 ? m : DefaultPartitionWidth) + Gap;
                     }) - Gap;
-                    ranges = candidate;
+                    groups = candidate
+                        .Select(r => Enumerable.Range(r.Start, r.End - r.Start).ToList())
+                        .ToList();
                     if (totalW <= availW || numCols <= minCols) break;
                     numCols--;
                 }
             }
             else
             {
-                // 「左侧 / 右侧纵向对齐」= **逐列填满**：先把最靠边的那一列自上而下塞满，
-                // 塞不下才往内开新列。方向由 PlaceColumns 的 fromRight 决定 ⇒ 两向严格镜像。
+                // 「左侧 / 右侧纵向对齐」= **逐列填满**（first-fit）：
+                // 从最靠边那列开始，把**所有还塞得下的**分区按配置顺序放进去（塞不下的跳过、
+                // 留给下一列），直到「再也塞不下任何一条」才开新列。方向由 fromRight 决定
+                // ⇒ 两向严格镜像。
+                //
+                // ⚠️⚠️ 2026-10-12 用户反馈修正：此前是 **next-fit**（遇到塞不下立刻换列），
+                // 于是「后面那些更矮的、本来塞得下的分区」被白白留给下一列。
+                // 真实配置 675/388/240（可用高 964）：next-fit 第一列只有 [675]，
+                // 而正解是第一列 [675,240]（675+16+240 = 931）、「work」单独第二列。
                 //
                 // ⚠️ 这里刻意**不用** BalancedColumnRanges：那套保序 DP 的目标是
                 // 「各列尽量等高」，为了压极差会把本该留在第一列的分区挪到后面去 ——
-                // 真实配置实测（3 个分区 428 / 316 / 314，可用高 1060）：
+                // 真实配置实测（3 个分区 428/ 316 / 314，可用高 1060）：
                 // 第一列本可装 2 个（428+16+316 = 760），但均衡分组为了把极差从 446 压到 218，
                 // 把第一列拆得只剩 1 个 ⇒ 用户看到「没有优先填充完最左侧的列」。
                 //
-                // ⚠️ 「填满优先」与「等高优先」不可兼得：代价是最后一列可能明显偏短。
+                // ⚠️「填满优先」与「等高优先」不可兼得：代价是最后一列可能明显偏短。
                 // 2026-09-30 用户明确选择前者（2026-09-28 曾一度反向选择过后者）。
-                ranges = GreedyFillColumnRanges(
+                groups = FirstFitColumnGroups(
                     sortedIds.Count, Gap, HeightAt, maxGroupHeight: availH);
             }
 
@@ -443,49 +502,41 @@ namespace DeskIsle.Services
             // 按高矮排开后就是严格阶梯 610 / 480 / 428 / 316 / 316。
             if (sortColumnsByHeight)
             {
-                var grouped = ranges
-                    .Select(r => Enumerable.Range(r.Start, r.End - r.Start).Select(i => sortedIds[i]).ToList())
+                var colHeights = ColumnHeightsOfGroups(groups, HeightAt, Gap);
+                // 并列时保持原读序 —— 保证结果稳定（不依赖排序算法是否稳定）
+                groups = groups
+                    .Select((g, i) => (g, h: colHeights[i], i))
+                    .OrderByDescending(x => x.h)
+                    .ThenBy(x => x.i)
+                    .Select(x => x.g)
                     .ToList();
-                var sortedCols = SortColumnsByHeight(grouped, id => getEffH(partMap[id]), Gap);
-                // 重新编号回下标区间，后续列 X / 列内 Y 的解算只认 ranges
-                var flat = sortedCols.SelectMany(c => c).ToList();
-                var newRanges = new List<(int Start, int End)>();
-                int cursor = 0;
-                foreach (var c in sortedCols)
-                {
-                    newRanges.Add((cursor, cursor + c.Count));
-                    cursor += c.Count;
-                }
-                // 按新列序重排 sortedIds 的副本，使下标区间继续指向正确的分区
-                sortedIds = flat;
-                ranges = newRanges;
             }
 
             // 2. 列 X：取该列最宽的分区，保证同列边缘严格对齐
-            var colWidths = ranges.Select(r =>
+            var colWidths = groups.Select(g =>
             {
                 double m = 0;
-                for (int i = r.Start; i < r.End; i++) m = Math.Max(m, WidthAt(i));
+                foreach (int i in g) m = Math.Max(m, WidthAt(i));
                 return m > 0 ? m : DefaultPartitionWidth;
             }).ToList();
 
-            var colX = new double[ranges.Count];
+            var colX = new double[groups.Count];
             if (fromRight)
             {
                 colX[0] = (screenWidth - Margin) - colWidths[0];
-                for (int c = 1; c < ranges.Count; c++) colX[c] = colX[c - 1] - Gap - colWidths[c];
+                for (int c = 1; c < groups.Count; c++) colX[c] = colX[c - 1] - Gap - colWidths[c];
             }
             else
             {
                 colX[0] = Margin;
-                for (int c = 1; c < ranges.Count; c++) colX[c] = colX[c - 1] + colWidths[c - 1] + Gap;
+                for (int c = 1; c < groups.Count; c++) colX[c] = colX[c - 1] + colWidths[c - 1] + Gap;
             }
 
             // 3. 逐列自上而下摆放，每列都从 topMargin 起（顶部对齐）
-            for (int c = 0; c < ranges.Count; c++)
+            for (int c = 0; c < groups.Count; c++)
             {
                 double curY = topMargin;
-                for (int i = ranges[c].Start; i < ranges[c].End; i++)
+                foreach (int i in groups[c])
                 {
                     string id = sortedIds[i];
                     double w = WidthAt(i);
@@ -556,11 +607,13 @@ namespace DeskIsle.Services
             // ── 列式排布：top / left / right 共用 ──
             //
             // top  ：尽量多列（再用可用宽度逐级夹）——整体最紧凑；
-            // left ：最少列数（每列刚好不超过可用高度），贴左；
-            // right：与 left 同分组、同列数，整块贴右 —— **left 的严格几何镜像**。
+            // left ：最少列数（每列刚好不超过可用高度），**从左到右依次优先填满每一列**，贴左；
+            // right：与 left 同分组、同列序，整块贴右 —— **left 的严格几何镜像**
+            //       （阅读方向自右向左 ⇒ 最右那列装得最满）。
             //
-            // ⚠️ **三种模式都按列高降序摆开**（`sortColumnsByHeight` 恒为 true）：
-            // 保证 left「贴左那列最高、自左向右递减」，right 是其严格镜像（自右向左递减）。
+            // ⚠️ 只有 `top` 才按列高降序摆开（`sortColumnsByHeight: true`）。
+            // left / right 自 2026-10-12 起传 false：要的是「列序 = 填充顺序」，
+            // 按高矮重排会让「依次填满」失效（且与 mac / crosscheck Python 同步）。
             bool isTop = lowerMode == "top";
             ColumnCountMode countMode = isTop
                 ? ColumnCountMode.AtMost
@@ -568,8 +621,9 @@ namespace DeskIsle.Services
             // 上限 [4, 6] 与 mac `Config.maxColumns` / Electron inline clamp 保持一致
             int columnLimit = isTop ? Math.Clamp(maxColumns, 4, 6) : maxColumns;
 
-            // ⚠️ 「某侧最高」不再有「无解」：各列已按列高排好，方向只负责挑哪一侧是「高」的那一侧。
+            // ⚠️ `top` 的「某侧最高」：各列已按列高排好，方向只负责挑哪一侧是「高」的那一侧。
             // 两个方向共用同一套分组、只翻 fromRight ⇒ **严格几何镜像**。方向不参与分组。
+            // left / right 的方向只决定贴哪一侧，分组恒为「逐列填满」的贪心结果。
             bool fromRight = isTop
                 ? string.Equals(topHeightOrder, "rightToLeft", StringComparison.OrdinalIgnoreCase)
                 : lowerMode == "right";
@@ -578,7 +632,7 @@ namespace DeskIsle.Services
                 sortedIds, partMap, GetEffH, GetW,
                 screenWidth, availH, availW, topMargin,
                 fromRight, countMode, columnLimit,
-                sortColumnsByHeight: true);
+                sortColumnsByHeight: isTop);
 
             foreach (var kv in placements) result[kv.Key] = kv.Value;
             return result;

@@ -321,8 +321,12 @@ public enum LayoutEngine {
         /// 尽量多列：列数取 `maxColumns` 与分区数的小者，再用可用宽度夹一次。
         /// 「顶部横向排序」用 —— 整体最紧凑、最矮。
         case atMost(Int)
-        /// 最少列数：刚好做到「每一列高度都不超过可用高度」。
+        /// 不指定列数：分组时逐列 first-fit 填满，塞不下的留给下一列。
         /// 「左侧 / 右侧对齐」用 —— 列更少、每列更长，是几条纵向长列。
+        ///
+        /// ⚠️ 名字里的 "minimum" 指的是「以「填满」为唯一目标」，**不是**「列数尽量少」：
+        /// first-fit 的列数可能比 `minimumFeasibleColumnCount` 少，因为后者算的是
+        /// **保序连续**分组下的最少列数，而 first-fit 允许跨过塞不下的条目。
         case minimumFeasible
     }
 
@@ -357,10 +361,10 @@ public enum LayoutEngine {
 
     /// 各列高度 = 列内条目高度之和 + 组内间隔（`(条数 − 1) × gap`）。
     public static func columnHeights(
-        ranges: [Range<Int>], heights: [Double], gap: Double
+        groups: [[Int]], heights: [Double], gap: Double
     ) -> [Double] {
-        ranges.map { r in
-            r.reduce(0.0) { $0 + heights[$1] } + Double(max(0, r.count - 1)) * gap
+        groups.map { g in
+            g.reduce(0.0) { $0 + heights[$1] } + Double(max(0, g.count - 1)) * gap
         }
     }
 
@@ -383,7 +387,9 @@ public enum LayoutEngine {
     ///     `.minimumFeasible` = 每列都不超过可用高度的**最少**列数；
     ///     `.atMost(n)` = 尽量取 n 列，**但若 n 列在高度上装不下会向上加列**（详见分支内注释），
     ///     再按实际分组结果逐级验证宽度往下减 —— 两种模式都**不会让列高超出屏幕**。
-    ///   - sortColumnsByHeight: 「顶部横向排序」传 true —— 见下方注释。
+    ///   - sortColumnsByHeight: 是否把各列**按列高降序重排**。
+    ///     仅「顶部横向排序」(top) 传 true；`left` / `right` 自 2026-10-12 起传 false，
+    ///     因为它们要的是「列序 = 填充顺序」，重排会破坏该语义 —— 见下方注释。
     public static func columnPlacements(
         ids: [String],
         effectiveHeight: (String) -> Double,
@@ -403,8 +409,10 @@ public enum LayoutEngine {
         let heights = ids.map { effectiveHeight($0) }
         let availH = max(minAvailHeight, screenHeight - top - bottomInset)
 
-        // 1. 定列数，并按该列数做一次保序均衡分组
-        var ranges: [Range<Int>] = [0 ..< ids.count]
+        // 1. 定列数，并按该列数做一次分组
+        //    `groups` 是「每列包含哪些下标」，**不要求连续** —— left / right 的 first-fit
+        //    必须能跳过塞不下的矮条目，连续区间表达不了（见 `firstFitColumnGroups`）。
+        var groups: [[Int]] = [Array(0 ..< ids.count)]
         switch columns {
         case .atMost(let limit):
             // ⚠️ 「尽量多列」与「每列不超出屏幕」可能冲突，而两者的对策方向**相反**：
@@ -424,19 +432,30 @@ public enum LayoutEngine {
                 let totalW = candidate.reduce(0.0) {
                     $0 + columnWidth($1.map { ids[$0] }, width: width, defaultWidth: defaultWidth) + gap
                 }
-                ranges = candidate
+                groups = candidate.map { Array($0) }
                 if totalW - gap <= availW || numCols <= minCols { break }
                 numCols -= 1
             }
         case .minimumFeasible:
-            // 「左侧 / 右侧纵向对齐」= **逐列填满**：先把一列自上而下塞满，塞不下才开新列。
+            // 「左侧 / 右侧纵向对齐」= **逐列填满**（first-fit）：
+            // 从最靠边那列开始，把**所有**还塞得下的分区按配置顺序放进去，
+            // 直到「剩下的每一条都塞不下」才开新列。塞不下的**留在原地等下一列**。
             //
-            // ⚠️ 2026-10-11 起，调用方（`alignPlacements`）会额外传 `sortColumnsByHeight: true`，
-            // 把塞好的各列**按列高降序摆到屏幕上** ⇒ 「最靠边的那一列最高」恒成立。
-            // 因此「优先填满最靠边的那一列」这条要求已被撤掉 —— 它与「自左向右递减」
-            // 在数学上互斥（见 `alignPlacements` 里 left 分支的注释），用户选择了后者。
-            // 分组内容本身没变，变的只是哪一组摆到最靠边。
-            ranges = greedyFillColumnRanges(
+            // ⚠️ **必须是 first-fit 而不是 next-fit**（2026-10-12 用户反馈修正）：
+            // next-fit 一遇到塞不下就立刻换列，于是「后面那些更矮的、本来塞得下的分区」
+            // 被白白留给下一列 —— 用户真实配置（675/388/240、可用高 964）下
+            // next-fit 给出第一列 `[675]`、第二列 `[388,240]`，而正确答案应是
+            // 第一列 `[675,240]`（675+16+240 = 931）、第二列 `[388]`。
+            // 这也解释了「把随手便签高度调小之后 work 就能排过去」：
+            // 高度一小 next-fit 恰好装得下，于是掩盖了「不会跳过」这个缺陷。
+            //
+            // 副作用（正向）：列数**不增反减**、每列更满。12 分区实测由 5 列
+            // [716,932,782,692,240] 收敛到 4 列 [932,912,812,722]。
+            //
+            // ⚠️ 列内仍按**配置顺序**自上而下摆，且 `groups[c]` 里下标递增 ——
+            // 「填满优先」不等于「打乱顺序」。调用方传 `sortColumnsByHeight: false`，
+            // 列序即填充顺序（见 `alignPlacements` 的 left 分支注释）。
+            groups = firstFitColumnGroups(
                 heights: heights, gap: gap, maxGroupHeight: availH)
         }
 
@@ -452,12 +471,12 @@ public enum LayoutEngine {
         // 而镜像正是用户明确要求保住的（见 README「镜像与单侧最高」）。
         //
         // ⚠️⚠️ 打开后**列序不再等于读序**，因此调用方**必须**传入与布局无关的稳定序列
-        // （`top` 传配置顺序）。否则「排完 → 按贴边读回 → 再分组」读到的已经是另一条序列，
+        // （`top` 传配置顺序）。否则「排完→ 按贴边读回 → 再分组」读到的已经是另一条序列，
         // 分组随之漂移，连点会越排越歪 —— 实测（7 分区 / 3 列）会一路漂成
         // 1054/646/482 → 978/776/428 → 1220/482/480 …
         if sortColumnsByHeight {
-            let groupH = columnHeights(ranges: ranges, heights: heights, gap: gap)
-            ranges = ranges.enumerated()
+            let groupH = columnHeights(groups: groups, heights: heights, gap: gap)
+            groups = groups.enumerated()
                 .sorted { a, b in
                     // 并列时保持原读序 —— 保证结果稳定（不依赖排序算法是否稳定）
                     groupH[a.offset] != groupH[b.offset]
@@ -469,7 +488,7 @@ public enum LayoutEngine {
 
         // 2. 落位
         return placeColumns(
-            ranges: ranges, ids: ids, effectiveHeight: effectiveHeight,
+            groups: groups, ids: ids, effectiveHeight: effectiveHeight,
             width: width, height: height, fromRight: fromRight,
             screenWidth: screenWidth, top: top, defaultWidth: defaultWidth)
     }
@@ -480,7 +499,7 @@ public enum LayoutEngine {
     /// 列坐标本身就是镜像算出来的（`colX[0]` 贴另一侧的 margin，随后逐列反向累加），
     /// 列宽也只取决于分组，与方向无关。
     private static func placeColumns(
-        ranges: [Range<Int>],
+        groups: [[Int]],
         ids: [String],
         effectiveHeight: (String) -> Double,
         width: (String) -> Double,
@@ -492,25 +511,25 @@ public enum LayoutEngine {
     ) -> [Placement] {
         let margin = Double(Layout.margin)
         let gap = Double(Layout.gap)
-        guard !ranges.isEmpty else { return [] }
+        guard !groups.isEmpty else { return [] }
 
         // 列 X：取该列最宽的分区，保证同列边缘严格对齐
-        let colWidths = ranges.map {
+        let colWidths = groups.map {
             columnWidth($0.map { ids[$0] }, width: width, defaultWidth: defaultWidth)
         }
-        var colX = [Double](repeating: margin, count: ranges.count)
+        var colX = [Double](repeating: margin, count: groups.count)
         if fromRight {
             colX[0] = (screenWidth - margin) - colWidths[0]
-            for c in 1 ..< ranges.count { colX[c] = colX[c - 1] - gap - colWidths[c] }
+            for c in 1 ..< groups.count { colX[c] = colX[c - 1] - gap - colWidths[c] }
         } else {
-            for c in 1 ..< ranges.count { colX[c] = colX[c - 1] + colWidths[c - 1] + gap }
+            for c in 1 ..< groups.count { colX[c] = colX[c - 1] + colWidths[c - 1] + gap }
         }
 
         // 逐列自上而下摆放，每列都从 top 起（顶部对齐）
         var result: [Placement] = []
-        for (c, r) in ranges.enumerated() {
+        for (c, g) in groups.enumerated() {
             var curY = top
-            for i in r {
+            for i in g {
                 let id = ids[i]
                 let w = width(id)
                 let x = fromRight ? colX[c] + (colWidths[c] - w) : colX[c]
@@ -655,10 +674,14 @@ public enum LayoutEngine {
         return ranges.reversed()
     }
 
-    /// 「每一列高度都不超过 `maxGroupHeight`」所需的最少列数。
+    /// 「每一列高度都不超过 `maxGroupHeight`」所需的**保序**最少列数。
     ///
     /// 贪心即最优：尽量往当前列塞，塞不下才换列，得到的列数一定最少
     /// （往前面的列多塞只可能减少后续列数）。单条本身超高时它自己独占一列。
+    ///
+    /// ⚠️ 这是**保序**（连续区间）分组下的最少列数，只被「顶部横向排序」当作高度下限用。
+    /// `left` / `right` 走的是 `firstFitColumnGroups`，**允许跨过塞不下的条目**去捡后面更矮的，
+    /// 因此实际列数可能**少于**本函数返回值 —— 那不是 bug，是 first-fit 装得更满。
     public static func minimumFeasibleColumnCount(
         heights: [Double], gap: Double, maxGroupHeight: Double
     ) -> Int {
@@ -677,33 +700,51 @@ public enum LayoutEngine {
         return cols
     }
 
-    /// 「逐列填满」的保序分组：与 `minimumFeasibleColumnCount` 同源同口径，但返回**每列的范围**。
+    /// 「逐列填满」的 **first-fit** 分组（`left` / `right` 用）。
     ///
-    /// 贪心即最优：尽量往当前列塞，塞不下才换列，所以**除最后一列外，每一列都是
-    /// 「再塞一条就会超出 `maxGroupHeight`」的状态** —— 这正是「左侧优先填满」的形式化含义。
-    /// 单条本身就超高时它自己独占一列（新一轮的第一条无条件加入，不会被判成超界）。
+    /// 规则：从最靠边那列开始，按配置顺序把**所有还塞得下的**分区都放进去
+    /// （塞得下就放、塞不下就跳过、留给下一列），直到「剩下的每一条都塞不下」才开新列。
+    /// 组内下标**递增**（列内视觉顺序 = 配置顺序）。
     ///
-    /// ⚠️ 判断「当前列是否为空」用 `i == start` 而不是 `cur == 0`：
-    /// 高度为 0 的分区会让 `cur` 停在 0，后者会把后续多条误判成「仍在第一列」而漏加 gap。
-    public static func greedyFillColumnRanges(
+    /// ⚠️⚠️ **为什么必须是 first-fit 而不是 next-fit**（2026-10-12 用户反馈修正）：
+    /// next-fit（遇到塞不下立刻换列）会把「后面那些更矮的、本来塞得下的分区」白白留给下一列。
+    /// 用户真实配置（675 / 388 / 240，可用高 964）：
+    /// - next-fit：`675+16+388 = 1079 > 964` → 立刻换列 ⇒ 第一列 `[675]`、第二列 `[388,240]`；
+    /// - first-fit：跳过 388、把 240 拉进来 ⇒ `675+16+240 = 931 ≤ 964`
+    ///   ⇒ **第一列 `[675,240]`、第二列 `[388]`** —— 这才是「优先填满」的正解。
+    ///
+    /// 连带好处：列数**不增反减**、每列更满。12 条分区实测由 5 列
+    /// [716, 932, 782, 692, 240] 收敛到 4 列 [932, 912, 812, 722]。
+    ///
+    /// - 单条本身超高时它自己独占一列（新一轮的第一条无条件加入，不会被判成超界）。
+    /// - 复杂度 O(n²)：分区数是几十的量级、只在点击对齐时跑一次，可忽略。
+    public static func firstFitColumnGroups(
         heights: [Double], gap: Double, maxGroupHeight: Double
-    ) -> [Range<Int>] {
+    ) -> [[Int]] {
         guard !heights.isEmpty else { return [] }
-        var ranges: [Range<Int>] = []
-        var start = 0
-        var cur: Double = 0
-        for (i, h) in heights.enumerated() {
-            let add = i == start ? h : h + gap
-            if i > start && cur + add > maxGroupHeight + 1e-9 {
-                ranges.append(start ..< i)
-                start = i
-                cur = h
-            } else {
-                cur += add
+        var groups: [[Int]] = []
+        var remaining = Array(heights.indices)      // 尚未归列的下标，恒保持升序
+        while !remaining.isEmpty {
+            var group: [Int] = []
+            var cur: Double = 0
+            var i = 0
+            while i < remaining.count {
+                let idx = remaining[i]
+                let h = heights[idx]
+                // ⚠️ 判「本列是否为空」用 `group.isEmpty` 而不是 `cur == 0`：
+                // 高度为 0 的分区会让 cur 停在 0，后者会把后续多条误判成「放得下」而漏加 gap。
+                let add = group.isEmpty ? h : h + gap
+                if group.isEmpty || cur + add <= maxGroupHeight + 1e-9 {
+                    group.append(idx)
+                    cur += add
+                    remaining.remove(at: i)            // 装下了 ⇒ 继续看下一条（不 i += 1）
+                } else {
+                    i += 1                             // 塞不下 ⇒ 留给后面的列
+                }
             }
+            groups.append(group)
         }
-        ranges.append(start ..< heights.count)
-        return ranges
+        return groups
     }
 
 // MARK: - 拖动吸附
@@ -872,31 +913,38 @@ public enum LayoutEngine {
 
         switch mode {
         case "left":
-            // 「左侧纵向对齐」= 最少列数（每列刚好不超出可用高度）+ 逐列填满，
-            // 再**把各列按列高降序摆开** ⇒ 最左一列最高，自左向右严格递减或相等。
+            // 「左侧纵向对齐」= **从左到右依次优先填满每一列**：
+            // 第一列把**所有塞得下的**分区按配置顺序放进去（塞不下的跳过、留给下一列），
+            // 直到再也塞不下任何一条才开第二列，依此类推 ⇒ **列的左右顺序就是填充顺序**。
             //
-            // ⚠️ 为什么要按列高摆开（2026-10-11 用户反馈）：只用「逐列填满」时，
-            // 真实配置会出现第二列比第一列高的情况（notes 670 单列 / 两个 portal 388+314=718；
-            // notes 那列已塞满 —— 再加 388 会到 1074 > 可用高 940 —— 却仍是矮的那一列）。
-            // 「先填满最靠边的那一列」与「自左向右递减」在数学上互斥，两者不可兼得，
-            // 用户选择了后者（这就撤掉了 2026-09-30 那条「优先填满最靠边列」的要求）。
+            // ⚠️⚠️ 2026-10-12 用户反馈修正（两处）：
+            // 1. 此前这里传 `sortColumnsByHeight: true`，把分好的各列**按列高降序重新摆开**。
+            //    那保证了「最左列最高」，但**彻底破坏「依次填满」** —— 列序与填充顺序脱钩。
+            // 2. 分组本身是 next-fit（遇到塞不下立刻换列），于是「后面那些更矮的、
+            //    本来塞得下的分区」被白白留给下一列。真实配置 675/388/240（可用高 964）
+            //    实测：第一列只有 `[675]`，而正解是 `[675, 240]`（675+16+240 = 931）。
+            //    「把随手便签调矮之后 work 能排过去」正是 next-fit 恰好装得下、
+            //    掩盖了这个缺陷。现已改为 first-fit（见 `firstFitColumnGroups`）。
             //
-            // ⚠️ 分组内容本身**没有变**（仍是 greedyFill 的那一刀）：只是把高的那组
-            // 摆到靠边的位置，所以「最少列数」这个身份保住了。
+            // ⚠️ 「填满优先」与「列高单调」在数学上**互斥**：贪心把第一列塞到「再也塞不下」，
+            // 它的高度未必是最大的。用户明确选择**填满优先**，故这里传 false。
+            // 副作用（已知且接受）：列高可能自左向右非单调。若要恢复单调，
+            // 只能改回 `sortColumnsByHeight: true`，但那会退回「不依次填满」。
             return columnPlacements(
                 ids: ids, effectiveHeight: getEffH, width: getW, height: heightProvider,
                 screenWidth: screenWidth, screenHeight: screenHeight,
                 top: top, defaultWidth: defaultWidth,
-                fromRight: false, columns: .minimumFeasible, sortColumnsByHeight: true)
+                fromRight: false, columns: .minimumFeasible, sortColumnsByHeight: false)
         case "right":
             // ⚠️ 必须与 left 用**同一段**算法、只把 fromRight 打开 ——
-            // 这样两者得到的分组完全一致，结果是彼此的**严格几何镜像**
-            // （⇒ 右侧对齐必然「自右向左递减」，也就是自左向右递增）。
+            // 这样两者得到的分组与列序完全一致，结果是彼此的**严格几何镜像**。
+            // 镜像后 `right` 的阅读方向是自右向左，因此「依次填满」表现为
+            // **最右那一列装得最满**，逐列向左推进。
             return columnPlacements(
                 ids: ids, effectiveHeight: getEffH, width: getW, height: heightProvider,
                 screenWidth: screenWidth, screenHeight: screenHeight,
                 top: top, defaultWidth: defaultWidth,
-                fromRight: true, columns: .minimumFeasible, sortColumnsByHeight: true)
+                fromRight: true, columns: .minimumFeasible, sortColumnsByHeight: false)
         default:
             // "top"：尽量多列（maxColumns）→ 各列尽量等高（保序 DP）→ **各列按列高降序摆开**。
             //

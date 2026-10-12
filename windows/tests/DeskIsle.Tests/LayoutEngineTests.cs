@@ -187,6 +187,100 @@ namespace DeskIsle.Tests
             Assert.Equal(0, LayoutEngine.MinimumFeasibleColumnCount(0, LayoutEngine.Gap, _ => 100, 1000));
         }
 
+        /// <summary>
+        /// first-fit 必须<b>跳过塞不下的、去捡后面更矮的</b> —— 2026-10-12 修的核心。
+        /// <para>
+        /// 用户真实配置（675 / 388 / 240，可用高 940）：旧的 next-fit 第一列只有 [675]，
+        /// 因为 675+16+388 = 1079 &gt; 940 就立刻换列；first-fit 跳过 388、拉进 240
+        /// ⇒ 675+16+240 = 931 ⇒ 第一列 [675,240]、第二列 [388]。这正是用户要的。
+        /// </para>
+        /// </summary>
+        [Fact]
+        public void FirstFitColumnGroups_SkipsUnfittingItemsInsteadOfEndingTheColumn()
+        {
+            double gap = LayoutEngine.Gap;
+
+            var real = LayoutEngine.FirstFitColumnGroups(
+                3, gap, i => new[] { 675.0, 388.0, 240.0 }[i], 940);
+            Assert.Equal(2, real.Count);
+            Assert.Equal(new[] { 0, 2 }, real[0]);   // 675 + 16 + 240 = 931
+            Assert.Equal(new[] { 1 }, real[1]);       // 388 自己一列
+
+            // 全都塞得下 ⇒ 只有一列
+            var one = LayoutEngine.FirstFitColumnGroups(
+                3, gap, i => new[] { 240.0, 388.0, 314.0 }[i], 1000);
+            Assert.Single(one);
+            Assert.Equal(new[] { 0, 1, 2 }, one[0]);
+
+            // 塞不下就跳过，而不是提前结束这一列
+            var skip = LayoutEngine.FirstFitColumnGroups(
+                3, gap, i => new[] { 500.0, 400.0, 300.0 }[i], 750);
+            Assert.Equal(2, skip.Count);
+            Assert.Equal(new[] { 0 }, skip[0]);       // 500+16+400 = 916 > 750
+            Assert.Equal(new[] { 1, 2 }, skip[1]);// 400+16+300 = 716 放得下
+
+            Assert.Empty(LayoutEngine.FirstFitColumnGroups(0, gap, _ => 100, 940));
+        }
+
+        /// <summary>
+        /// 单条本身超高时它自己独占一列；而它<b>两侧</b>的矮分区仍能被收进同一列
+        /// （中间那条超高不会把两侧拆散）—— 这正是 first-fit 优于 next-fit 的价值。
+        /// </summary>
+        [Fact]
+        public void FirstFitColumnGroups_OversizedItemGetsItsOwnColumn()
+        {
+            double gap = LayoutEngine.Gap;
+            var two = LayoutEngine.FirstFitColumnGroups(
+                2, gap, i => new[] { 900.0, 200.0 }[i], 600);
+            Assert.Equal(2, two.Count);
+            Assert.Equal(new[] { 0 }, two[0]);
+            Assert.Equal(new[] { 1 }, two[1]);
+
+            var twoTall = LayoutEngine.FirstFitColumnGroups(
+                2, gap, i => new[] { 900.0, 800.0 }[i], 600);
+            Assert.Equal(2, twoTall.Count);
+            Assert.Equal(new[] { 0 }, twoTall[0]);
+            Assert.Equal(new[] { 1 }, twoTall[1]);
+
+            // 超高条在中间：前后两条 200 收进同一列（200+16+200 = 416 ≤ 600）
+            var mid = LayoutEngine.FirstFitColumnGroups(
+                3, gap, i => new[] { 200.0, 900.0, 200.0 }[i], 600);
+            Assert.Equal(2, mid.Count);
+            Assert.Equal(new[] { 0, 2 }, mid[0]);
+            Assert.Equal(new[] { 1 }, mid[1]);
+        }
+
+        /// <summary>
+        /// 端到端：left / right 拿到的分组完全一致 ⇒ 结果互为严格几何镜像。
+        /// </summary>
+        [Fact]
+        public void LeftAndRight_ShareOneGrouping_EvenWithFirstFit()
+        {
+            // 12 条参差不齐、可用高 910（screenH 1050 − top 76 − bottom 40）
+            double[] hs = { 500, 200, 300, 200, 400, 250, 180, 320, 210, 260, 190, 240 };
+            var ps = hs.Select((h, i) => new PartitionModel
+            {
+                Id = $"p{i:00}", X = 16, Y = 100, Width = 316, Height = h, IsCollapsed = false
+            }).ToList();
+
+            var left = LayoutEngine.CalculateLayout("left", ps, 1680, 1050, 76, 40, 5);
+            var right = LayoutEngine.CalculateLayout("right", ps, 1680, 1050, 76, 40, 5);
+
+            foreach (var p in ps)
+                Assert.Equal(1680, left[p.Id].X + p.Width + right[p.Id].X, 6);
+
+            // 每列都不超出可用高，且 Y 在两向完全相同（同一分组的直接后果）
+            const double availH = 1050 - 76 - 40;
+            foreach (var g in left.GroupBy(kv => kv.Value.X))
+            {
+                double colH = g.Sum(kv => hs[int.Parse(kv.Key.Substring(1))])
+                              + (g.Count() - 1) * LayoutEngine.Gap;
+                Assert.True(colH <= availH + 0.001, $"列高 {colH} 超出可用高 {availH}");
+            }
+            foreach (var p in ps)
+                Assert.Equal(left[p.Id].Y, right[p.Id].Y, 6);
+        }
+
         [Fact]
         public void SortColumnsByHeight_PutsTallestColumnFirst()
         {

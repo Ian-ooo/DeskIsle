@@ -709,14 +709,19 @@ final class LayoutEngineTests: XCTestCase {
         "p07": 180, "p08": 320, "p09": 210, "p10": 260, "p11": 190, "p12": 240
     ]
 
-    /// left / right **逐列填满**：先从最靠边的那一列塞起，塞到「再塞一条就超」才换列。
+    /// left / right **逐列填满**（first-fit）：先从最靠边的那一列塞起，
+    /// 把**所有塞得下的**都放进去（塞不下的跳过、留给下一列），直到再也塞不下才换列。
     ///
-    /// 12 条分区、可用高 934 ⇒ 划成 5 列 `[716, 932, 782, 692, 240]`（升序 240…932）。
+    /// 12 条分区、可用高 934⇒ 划成 **4 列** `[932, 912, 812, 722]`。
     ///
     /// ⚠️ 这里断言的是「**填满优先**」而不是「各列等高」：两者不可兼得，
     /// 2026-09-30 用户明确要前者（2026-09-28 曾一度选过后者，见下方 `columnHeights` 值的变化）。
     /// 「各列等高」的版本会把本该留在第一列的分区搬去后面以压极差（得 `[516,666,716,722,742]`），
     /// 直接表现就是「第一列没填满」。
+    ///
+    /// ⚠️⚠️ **列数由 5 变4 是2026-10-12 改用 first-fit 的直接结果**：
+    /// 此前是 next-fit，得到 5 列 `[716, 932, 782, 692, 240]` ——
+    /// 最后一列只剩 240（孤零零一条），而中间那些列其实还能再塞。
     func testColumnsAreFilledFromTheLeadingEdgeFirst() {
         let ids = (1 ... 12).map { String(format: "p%02d", $0) }
         let sizes = makeSizes(LayoutEngineTests.skewed12.mapValues { (316.0, $0) })
@@ -728,18 +733,31 @@ final class LayoutEngineTests: XCTestCase {
             defaultWidth: 316, fromRight: false, columns: .minimumFeasible)
 
         // 按列的几何顺序（X 升序）：last column 可以很短，其余各列都应是「塞满」状态
-        XCTAssertEqual(columnHeightsInOrder(left), [716, 932, 782, 692, 240])
+        XCTAssertEqual(columnHeightsInOrder(left), [932, 912, 812, 722])
 
-        // 语义本身：**除最后一列外**，每列再塞下「紧接的那一条」就会超出可用高度 ——
-        // 这才是「优先填满」的形式化含义（用该列的下一条，不是全局最矮的一条）
+        // 语义本身：**除最后一列外**，每列都再也塞不下**任何一条剩余分区** ——
+        // 这才是「优先填满」的形式化含义。注意是「任何一条」，不是「紧接的那一条」：
+        // next-fit 只检查紧接的那条，会把后面更矮的、白白留给下一列。
         let hSeq = ids.map { LayoutEngineTests.skewed12[$0]! }
-        let ranges = LayoutEngine.greedyFillColumnRanges(
+        let groups = LayoutEngine.firstFitColumnGroups(
             heights: hSeq, gap: Double(Layout.gap), maxGroupHeight: availH)
-        for (ci, r) in ranges.enumerated() where ci < ranges.count - 1 {
-            let colH = r.reduce(0.0) { $0 + hSeq[$1] } + Double(Layout.gap) * Double(r.count - 1)
-            XCTAssertGreaterThan(colH + Double(Layout.gap) + hSeq[r.upperBound], availH,
-                                 "第 \(ci) 列还能再塞下一条，说明没有被填满")
+        XCTAssertEqual(groups.count, 4)
+        var placed = Set<Int>()
+        for (ci, g) in groups.enumerated() {
+            // 组内下标递增 ⇒ 列内视觉顺序 = 配置顺序
+            XCTAssertEqual(g, g.sorted(), "第 \(ci) 列的下标必须递增")
+            XCTAssertTrue(placed.isDisjoint(with: g), "分区被重复归列")
+            placed.formUnion(g)
+            let colH = g.reduce(0.0) { $0 + hSeq[$1] } + Double(Layout.gap) * Double(g.count - 1)
+            XCTAssertLessThanOrEqual(colH, availH + 0.001, "第 \(ci) 列超出可用高")
+            guard ci < groups.count - 1 else { continue }
+            let rest = Set(groups.dropFirst(ci + 1).flatMap { $0 })
+            for i in rest {
+                XCTAssertGreaterThan(colH + Double(Layout.gap) + hSeq[i], availH,
+                                     "第 \(ci) 列还塞得下第 \(i) 条，说明没有被填满")
+            }
         }
+        XCTAssertEqual(placed.count, hSeq.count, "有分区没被归列")
     }
 
     /// 10 条等高短分区：第一列塞到 912（8 条），第二列只剩 2 条（216）。
@@ -811,11 +829,19 @@ final class LayoutEngineTests: XCTestCase {
         XCTAssertEqual(right.map { $0.x + $0.width }.max()!, screenW - 16, accuracy: 0.001)
     }
 
-    /// **从「贴边的那一侧」读回的序列与上一次排布用过的序列相同** ⇒ 连点同一个模式不窜位，
-    /// 且「左 → 右 → 左」能回到同一套排布。
+    /// **读序必须取「配置顺序」，绝不能从布局几何反推** —— 这条现在有了新的、更硬的理由。
     ///
-    /// 这条是「镜像」成立的前提：三个列式模式必须拿到**同一条序列**。
-    func testColumnModesAreIdempotentThroughAnchorSideReading() {
+    /// ⚠️⚠️ 2026-10-12 改用 first-fit 之后，first-fit 的分组**不连续**
+    /// （第一列可能是 `[0, 2, 5]` 这种跳过中间条目的组合）。于是
+    /// **「按列优先从贴边那侧读回来」得到的序列 ≠ 配置顺序**，
+    /// 而且它**依赖具体布局**——同一批分区在 left / right 下读回来的序列互不相同。
+    ///
+    /// 这正是 `alignPlacements` 早就坚持「一律读配置顺序（`AlignItem.index`）」的原因：
+    /// 一旦改回按几何读，连点就会因为「读到的序列又变了」而重排出另一套结果。
+    ///
+    /// 本测试把这个前提**正面钉住**：断言几何读回 ≠ 配置顺序。
+    /// 若谁把读序改回几何来源，first-fit 会立刻产出不同分组，这条断言就会失败。
+    func testColumnModesDoNotReadOrderFromGeometry() {
         let ids = (1 ... 12).map { String(format: "p%02d", $0) }
         let sizes = makeSizes(LayoutEngineTests.skewed12.mapValues { (316.0, $0) })
         let screenW = 1680.0
@@ -827,8 +853,8 @@ final class LayoutEngineTests: XCTestCase {
                 height: sizes.height, screenWidth: screenW, screenHeight: 1050, top: 76,
                 defaultWidth: 316, fromRight: fromRight, columns: .minimumFeasible)
         }
-        /// 与 AppDelegate 一致：先按「当前布局贴哪一边」定读向，再按列优先读序取序列
-        func reading(_ ps: [LayoutEngine.Placement]) -> [String] {
+        /// 旧读序：先按「当前布局贴哪一边」定读向，再按列优先取序列
+        func geometricReading(_ ps: [LayoutEngine.Placement]) -> [String] {
             let minX = ps.map(\.x).min()!
             let maxRight = ps.map { $0.x + $0.width }.max()!
             let fromRight = (screenW - margin - maxRight) < (minX - margin)
@@ -838,23 +864,44 @@ final class LayoutEngineTests: XCTestCase {
                 return p1.id < p2.id
             }.map(\.id)
         }
+
+        let left = run(ids, false)
+        // ⚠️ first-fit 的分组不连续 ⇒ 几何读回 **必然** 打乱配置顺序。
+        // 这条断言就是「读序不许来自几何」的护栏。
+        XCTAssertNotEqual(geometricReading(left), ids,
+                          "first-fit 的分组不连续，几何读回应当 ≠ 配置顺序；"
+                          + "若这条开始失败，说明分组退化成连续、读序有可能被改回几何来源")
+    }
+
+    /// **left / right 拿到的是同一条序列 ⇒ 分组完全一致 ⇒ 结果是严格镜像**。
+    ///
+    /// 这条是「镜像」成立的前提。2026-10-12 改 first-fit 之后仍然成立：
+    /// 分组只取决于 `heights` 与 `availH`，与 `fromRight` 无关。
+    func testLeftAndRightShareOneGroupingAndStayIdempotent() {
+        let ids = (1 ... 12).map { String(format: "p%02d", $0) }
+        let sizes = makeSizes(LayoutEngineTests.skewed12.mapValues { (316.0, $0) })
+        let screenW = 1680.0
+
+        func run(_ fromRight: Bool) -> [LayoutEngine.Placement] {
+            LayoutEngine.columnPlacements(
+                ids: ids, effectiveHeight: sizes.effectiveHeight, width: sizes.width,
+                height: sizes.height, screenWidth: screenW, screenHeight: 1050, top: 76,
+                defaultWidth: 316, fromRight: fromRight, columns: .minimumFeasible)
+        }
         let norm: ([LayoutEngine.Placement]) -> [[Double]] =
             { $0.sorted { $0.id < $1.id }.map { [$0.x, $0.y, $0.width, $0.height] } }
 
-        let left = run(ids, false)
-        let right = run(ids, true)
+        let left = run(false)
+        let right = run(true)
 
-        // 贴左的布局从左读、贴右的从右读 —— 都还原成同一个序列
-        XCTAssertEqual(reading(left), ids)
-        XCTAssertEqual(reading(right), ids)
-
-        // 连点两次坐标完全不变
-        XCTAssertEqual(norm(run(reading(left), false)), norm(left))
-        XCTAssertEqual(norm(run(reading(right), true)), norm(right))
-        // 左 → 右 → 左 回到同一套排布
-        XCTAssertEqual(norm(run(reading(right), false)), norm(left))
-        // 右 → 左 → 右 同理
-        XCTAssertEqual(norm(run(reading(left), true)), norm(right))
+        // ① 列的空间顺序互为镜像
+        XCTAssertEqual(columnHeightsInOrder(right), columnHeightsInOrder(left).reversed())
+        // ② 连点同一方向幂等（读序固定为配置顺序，与布局无关）
+        XCTAssertEqual(norm(run(false)), norm(left))
+        XCTAssertEqual(norm(run(true)), norm(right))
+        // ③ 左 → 右 → 左 回到同一套排布
+        XCTAssertEqual(norm(run(true)), norm(right))
+        XCTAssertEqual(columnHeightsInOrder(run(false)), columnHeightsInOrder(left))
     }
 
     func testRightAlignmentAnchorsToRightEdgeAndAlignsNarrowItemRight() {
@@ -1054,35 +1101,148 @@ extension LayoutEngineTests {
                                           height: p.height, isCollapsed: false, index: i)
         }
     }
-
-    /// **用户真实配置（2026-10-11）的回归**：3 个分区 670 / 388 / 314，1920×1080、top=100
-    /// ⇒ 可用高 940。670 那一列其实已经填满（再塞 388 会到 1074 > 940），
-    /// 却仍矮于第二列的 388+16+314 = 718 —— 用户报的就是「第二列比第一列高」。
-    /// 按列高降序摆开后：最左一列 718，第二列 670。
-    func testLeftAlignPutsTallerColumnAtTheAnchor() {
-        let ps = align([670, 388, 314], "left")
-        XCTAssertEqual(columnHeightsInOrder(ps), [718, 670])
-        // 两个 portal 在最左列上下叠放，notes 退到第二列
+    /// **「依次优先填满」的正式回归 —— 用户真实配置（2026-10-12反馈）**
+    ///
+    /// 用户当时的三个分区：`随手便签` 675 / `work` 388 / `myself` 240，1920×1080、top=100
+    /// ⇒ 可用高 1080 − 100 − 40 = **940**。
+    ///
+    /// ⚠️⚠️ **这里就是「next-fit 不肯跳过」那个缺陷的复现件**：
+    /// - 旧实现（next-fit）：第一列塞 675 后，「紧接的」work 是 388，
+    ///   675+16+388 = 1079 > 940 ⇒ **立刻换列**，于是 `myself`(240) 也被留给第二列。
+    ///   结果第一列只有 `随手便签`，第二列 `work` + `myself`。
+    ///   用户原话正是这个：「应该可以将随手便签和 myself 排在第一列，但是你没有」。
+    /// - 现实现（first-fit）：第一列跳过 work，把 240 拉进来
+    ///   ⇒ 675 + 16 + 240 = 931 ≤ 940 ⇒ **第一列 `随手便签` + `myself`，第二列才是 `work`**。
+    ///
+    /// 用户还观察到「把随手便签高度调小之后 work 就能排过去」—— 那正是 next-fit
+    /// 恰好装得下时**掩盖了不会跳过**这个缺陷，调小高度只是让它偶然不再触发。
+    func testLeftAlignFillsColumnsInOrder() {
+        let ps = align([675, 388, 240], "left")
+        // 第一列 675+16+240 = 931，第二列孤零零一条 388
+        XCTAssertEqual(columnHeightsInOrder(ps), [931, 388],
+                       "左对齐必须先把第一列填满：675 后面那条 388 塞不下，应跳过它去拉 240")
+        // 最左列必须有 2 个分区 —— 它是「填得最满」的那一列
         let firstColX = ps.map(\.x).min()!
-        XCTAssertEqual(ps.filter { abs($0.x - firstColX) < 0.001 }.count, 2,
-                       "最左列应当是两个 portal（合计 718）")
+        let firstCol = ps.filter { abs($0.x - firstColX) < 0.001 }
+        XCTAssertEqual(firstCol.count, 2, "最靠边那列应当装下 2 个分区（675 与 240）")
+        // 且列内自上而下就是配置顺序
+        XCTAssertEqual(firstCol.sorted { $0.y < $1.y }.map(\.id), ["p0", "p2"])
     }
 
-    /// left 自左向右严格递减；right 是它的镜像 ⇒ 自左向右递增（自右向左递减）。
-    func testAlignColumnHeightsFormAMonotoneStaircase() {
+    /// 「依次优先填满」的形式化定义（2026-10-12）：**列的左右顺序必须等于填充顺序**。
+    ///
+    /// 做法：把排布结果按 X 分列、列内按 Y 排序，得到的分区序列应当与
+    /// `firstFitColumnGroups` 算出的**分组序列完全一致**。
+    /// 这比断言「列高单调」更贴近用户诉求，也更强 —— 它同时锁住了列序与组内顺序。
+    ///
+    /// ⚠️ 注意 first-fit 的分组**不连续**（第1 列可能是 `[0, 3, 5]` 这种），
+    /// 所以断言必须按「组内下标」展平，不能按区间展平。
+    /// ⚠️ 与「列高单调递减」互斥（见 LayoutEngine 的 left 分支注释）：本测试锁前者。
+    func testLeftAlignColumnOrderEqualsFillOrder() {
         let heights = (1 ... 12).map { LayoutEngineTests.skewed12[String(format: "p%02d", $0)]! }
+        let ps = align(heights, "left", screenWidth: 1680, screenHeight: 1050, width: 316)
+
+        // 实际落位读出的序列：按X 分列（从左到右），列内按 Y 从上到下
+        let byX = Dictionary(grouping: ps) { Int($0.x) }
+        let actual = byX.keys.sorted().flatMap { k in
+            byX[k]!.sorted { $0.y < $1.y }.map { $0.id }
+        }
+
+        // 期望：first-fit 分组后按组内下标展平
+        // ⚠️ 可用高必须与 `columnPlacements` 同口径：screenHeight − top − bottomInset。
+        // 早前这里误写成 `− Layout.margin`，得到 934 而实际是 910 ——
+        // 分组结果不同时断言就会假失败（first-fit 尤其敏感：它按「塞不塞得下」逐条决策）。
+        let availH = 1050 - 100 - LayoutEngine.bottomInset
+        let groups = LayoutEngine.firstFitColumnGroups(
+            heights: heights, gap: Double(Layout.gap), maxGroupHeight: availH)
+        let ids = heights.indices.map { "p\($0)" }
+        let expected = groups.flatMap { $0.map { ids[$0] } }
+
+        XCTAssertEqual(actual, expected,
+                       "left 的列序必须等于填充顺序（first-fit 逐列填满），不能被按列高重排打乱")
+    }
+
+    /// **first-fit 必须允许「跳过塞不下的、去捡后面更矮的」** —— 这正是 2026-10-12 修的核心。
+    ///
+    /// 四条合成用例，每条都在「紧接的那条塞不下、但后面有一条塞得下」处设卡：
+    /// - `[675, 388, 240]` @940 → 第一列 675 后面跳过 388、拉进 240（= 931）；
+    /// - `[500, 400, 300]` @750 → 第一列跳过 400、拉进 300（816 仍超 750 ⇒ 拉不进），
+    ///   真正能演示「跳过」的是 400 那一列：它跳过 300 之后仍收 300 到自己那列；
+    ///   用 `[500, 300, 400]` @750 更直观：第一列 500+16+300 = 816 仍超 ⇒ 只放 500，
+    ///   第二列 300+16+400 = 716 放得下 ⇒ 两列，绝不出现「第一列孤零零一条 500 就结束」。
+    func testFirstFitSkipsUnfittingItemsInsteadOfEndingTheColumn() {
+        let gap = Double(Layout.gap)
+
+        // 用户真实配置的形状：跳过中间那条，塞进最后一条
+        XCTAssertEqual(
+            LayoutEngine.firstFitColumnGroups(heights: [675, 388, 240], gap: gap, maxGroupHeight: 940),
+            [[0, 2], [1]],
+            "670 后面那条 388 塞不下，应跳过它把 240 拉进第一列")
+
+        // 「全都塞得下」时必须只有一列（不许平白多开列）
+        XCTAssertEqual(
+            LayoutEngine.firstFitColumnGroups(heights: [240, 388, 314], gap: gap, maxGroupHeight: 940),
+            [[0, 1], [2]],
+            "240+16+388+16+314 = 974 > 940，最后一条塞不下")
+
+        // 提高可用高后必须只开一列：证明它不是「按顺序硬切」
+        XCTAssertEqual(
+            LayoutEngine.firstFitColumnGroups(heights: [240, 388, 314], gap: gap, maxGroupHeight: 1000),
+            [[0, 1, 2]],
+            "全都塞得下时应当只有一列")
+
+        // 塞不下就跳过，而不是提前结束这一列
+        XCTAssertEqual(
+            LayoutEngine.firstFitColumnGroups(heights: [500, 400, 300], gap: gap, maxGroupHeight: 750),
+            [[0], [1, 2]],
+            "500+16+400 = 916 > 750 塞不下，第一列只放 500；400+16+300 = 716 放得下")
+
+        // 空输入不炸
+        XCTAssertEqual(LayoutEngine.firstFitColumnGroups(heights: [], gap: gap, maxGroupHeight: 940),
+                       [])
+    }
+
+    /// 单条本身超高时它自己独占一列（不能因为「塞不下」就把它丢掉或让它与别人同行）。
+    ///
+    /// ⚠️ 第一条是**无条件加入**的（`group.isEmpty` 短路），所以 900 放进第一列之后
+    /// 剩下的 200 只能自己开新列 —— 超高那条不会把整列「带歪」。
+    func testFirstFitGivesOversizedItemItsOwnColumn() {
+        let gap = Double(Layout.gap)
+        XCTAssertEqual(
+            LayoutEngine.firstFitColumnGroups(heights: [900, 200], gap: gap, maxGroupHeight: 600),
+            [[0], [1]])
+        // 两条都超高 ⇒ 各占一列
+        XCTAssertEqual(
+            LayoutEngine.firstFitColumnGroups(heights: [900, 800], gap: gap, maxGroupHeight: 600),
+            [[0], [1]])
+        // 超高条在**中间**：它自己一列，而前后两条 200 会被「跳过超高条」收进同一列
+        // （200 + 16 + 200 = 416 ≤ 600）⇒ 2 列，不是 3 列。
+        // 这正是 first-fit 相对 next-fit 的价值：中间那条超高不会把两侧的矮分区拆散。
+        XCTAssertEqual(
+            LayoutEngine.firstFitColumnGroups(heights: [200, 900, 200], gap: gap, maxGroupHeight: 600),
+            [[0, 2], [1]])
+    }
+
+    /// left / right 的列高**不再保证单调**（2026-10-12 起）。
+    ///
+    /// 这不是 bug，而是「依次优先填满」的必然结果：first-fit 把第一列塞到「再也塞不下
+    /// 任何一条」，它的高度未必是最大的。
+    ///
+    /// ⚠️ 「依次填满」与「列高单调」互斥，二者只能选一个，用户选了前者。
+    /// 旧实现用 `sortColumnsByHeight: true` 换取单调，代价是列序与填充顺序脱钩。
+    ///
+    /// 现在锁住真正的不变量：**每列都不超出可用高度**。
+    func testLeftAndRightNeverExceedAvailableHeight() {
+        let heights = (1 ... 12).map { LayoutEngineTests.skewed12[String(format: "p%02d", $0)]! }
+        let availH = 1050.0 - 100.0 - LayoutEngine.bottomInset
         for mode in ["left", "right"] {
             let hs = columnHeightsInOrder(align(heights, mode, screenWidth: 1680,
                                                 screenHeight: 1050, width: 316))
-            for i in 1 ..< hs.count {
-                if mode == "left" {
-                    XCTAssertLessThanOrEqual(hs[i], hs[i - 1] + 0.001,
-                                             "\(mode) 第 \(i) 列比前一列高：\(hs)")
-                } else {
-                    XCTAssertGreaterThanOrEqual(hs[i], hs[i - 1] - 0.001,
-                                                "\(mode) 第 \(i) 列比前一列矮：\(hs)")
-                }
+            for (i, h) in hs.enumerated() {
+                XCTAssertLessThanOrEqual(h, availH + 0.001,
+                                         "\(mode) 第 \(i + 1) 列高 \(h) 超出了可用高 \(availH)")
             }
+            XCTAssertGreaterThan(hs.count, 1, "\(mode) 这些数据应当分出多列")
         }
     }
 

@@ -31,6 +31,11 @@ let HS = [316.0, 150.0, 150.0, 150.0, 314.0, 428.0, 610.0]
 // 「超高」复现件：7 条里 5 条 900 高，availH = 1060。
 // 高度超了要**加**列（与「宽度超了才减列」方向相反），这是最容易写反的一处。
 let TALL = [500.0, 500.0, 900.0, 900.0, 900.0, 900.0, 900.0]
+// 「first-fit 跳过」复现件（2026-10-12）：用户真实配置的形状 ——
+// 675 后面紧跟一条塞不下的 388，再后面有一条塞得下的 240。
+// next-fit 会在这里立刻换列，first-fit 必须跳过 388 把 240 拉进第一列。
+// 三端只要有一端没改成「跳过」，这个场景的列高就会不同。
+let SKIP = [675.0, 388.0, 240.0, 610.0, 150.0, 430.0]
 
 func fixture(_ hs: [Double], _ tag: String) -> [LayoutEngine.AlignItem] {
     hs.enumerated().map { i, h in
@@ -55,6 +60,7 @@ let scenarios: [(String, [LayoutEngine.AlignItem])] = [
     ("贴左初值", fixture(HS, "t")),
     ("贴右初值", mirrored(fixture(HS, "t"))),
     ("超高初值", fixture(TALL, "s")),
+    ("跳过初值", fixture(SKIP, "k")),
 ]
 
 /// 与 Python 侧同为「保留 6 位小数」。
