@@ -637,5 +637,51 @@ namespace DeskIsle.Services
             foreach (var kv in placements) result[kv.Key] = kv.Value;
             return result;
         }
+
+        /// <summary>
+        /// 把分区拉回可见区域，同时尽量保住它和正上方分区之间的 <see cref="Gap"/>。
+        /// 与 mac <c>LayoutEngine.positionKeepingGap</c> 同口径。
+        ///
+        /// 贴底的最后一个分区若为了底部边距被上移，会把和上一个分区的间距挤掉。
+        /// 窗口按标准间距仍然完整落在可见区域内时，放弃底部边距、保住间距。
+        /// 窗口本身已经超出可见区域、间距又放不下时，仍然上移。
+        /// 屏幕中部用户故意贴紧的分区不介入：只有顶边已经压到（或越过）底部边距线时才处理。
+        /// </summary>
+        public static (double X, double Y) PositionKeepingGap(
+            double x, double y, double w, double h,
+            double visibleWidth, double visibleHeight,
+            double top,
+            IReadOnlyList<(double X, double Y, double W, double H)> others,
+            double? sideMargin = null,
+            double? bottomMargin = null)
+        {
+            double side = sideMargin ?? Margin;
+            double bottom = bottomMargin ?? Gap;
+
+            double minX = side;
+            double maxX = visibleWidth - w - side;
+            double nx = Math.Min(Math.Max(x, minX), Math.Max(minX, maxX));
+
+            double minY = top;
+            double softMaxY = visibleHeight - h - bottom;
+            double hardMaxY = visibleHeight - h;
+            double yLimit = Math.Max(minY, softMaxY);
+
+            double gapFloor = minY;
+            foreach (var o in others)
+            {
+                bool overlapsX = nx < o.X + o.W && o.X < nx + w;
+                if (!overlapsX || o.Y >= y) continue;
+                double oBottom = o.Y + o.H;
+                if (oBottom > y + Math.Max(h, 0)) continue;
+                gapFloor = Math.Max(gapFloor, oBottom + Gap);
+            }
+
+            double ny = Math.Min(Math.Max(y, minY), yLimit);
+            bool pressedToBottom = y > yLimit + 0.5 || Math.Abs(y - yLimit) <= 0.5;
+            if (pressedToBottom && ny < gapFloor && gapFloor <= Math.Max(minY, hardMaxY))
+                ny = gapFloor;
+            return (nx, ny);
+        }
     }
 }

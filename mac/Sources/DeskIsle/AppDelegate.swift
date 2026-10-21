@@ -1815,7 +1815,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return url.path
     }
 
-    /// 按类型创建分区（对齐 Electron 的 NewPartitionModal 默认内容）。
+    /// 按类型创建分区。待办从空列表开始，便签正文为空，提示由界面自己画。
     func createPartition(type: String, folderPath: String?, title: String?,
                          extensions: [String] = [], onScreenID sid: CGDirectDisplayID? = nil) {
         let targetScreen = resolvedScreen(sid)
@@ -1847,13 +1847,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             part["folderPath"] = folderPath ?? ""
         case "todo":
             defaultTitle = "✅ 今日待办清单"
-            part["todos"] = [
-                ["id": "todo-1", "text": "整理桌面核心工作文件", "completed": false, "priority": "high"],
-                ["id": "todo-2", "text": "规划项目迭代功能", "completed": true, "priority": "medium"]
-            ]
+            part["todos"] = [[String: Any]]()
         default:
             defaultTitle = "📝 随手便签"
-            part["noteContent"] = "在此输入便签备忘内容..."
+            part["noteContent"] = ""
         }
         let rawTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let resolvedTitle = rawTitle.isEmpty ? defaultTitle : rawTitle
@@ -2632,10 +2629,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 分辨率/显示器变化后，把跑到屏幕外的分区拉回来（只纠正越界，不动正常分区）。
+    ///
+    /// 贴底的分区若为了底部边距被上移，会把和正上方分区的 `Layout.gap` 挤掉。
+    /// 落点交给 `LayoutEngine.positionKeepingGap`：窗口仍能完整留在可见区内时保住间距。
     func ensurePartitionsInBounds() {
-        // ⚠️ 边距/间距必须引用 `Layout`，不能自己写数值 —— 见 LayoutEngine.swift 文件头注释。
-        let side = Layout.margin, bottom = Layout.gap
-
         var changed: [(String, CGFloat, CGFloat, NSScreen)] = []
         config.updateQuiet { raw in
             guard var parts = raw["partitions"] as? [[String: Any]] else { return }
@@ -2656,13 +2653,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let y = Config.num(parts[i]["y"])
                 // visibleFrame 是 AppKit 左下原点；配置坐标是「屏幕左上原点」的相对距离，
                 // 所以横向可用范围 = vf.width，纵向可用高度 = vf.height。
-                let minX = side
-                let maxX = vf.width - w - side
-                let maxY = vf.height - displayH - bottom
                 // 上边距按「该分区所在屏幕」计算（各屏顶栏位置一致，但保持同源）
                 let top = visualTopMargin(for: screen)
-                let nx = min(max(x, minX), max(minX, maxX))
-                let ny = min(max(y, top), max(top, maxY))
+                let others: [(x: Double, y: Double, w: Double, h: Double)] = parts.enumerated().compactMap { j, part in
+                    guard j != i else { return nil }
+                    let oid = (part["id"] as? String) ?? ""
+                    let otherScreen = self.panels.first(where: { $0.partitionID == oid })?.screen
+                        ?? self.config.screenId(of: oid).flatMap { self.screen(id: $0) }
+                        ?? screen
+                    guard otherScreen.displayID == screen.displayID else { return nil }
+                    let otherCollapsed = (part["isCollapsed"] as? Bool) ?? false
+                    let otherH = otherCollapsed
+                        ? Double(PartitionMetrics.headerHeight)
+                        : Config.num(part["height"])
+                    return (x: Config.num(part["x"]), y: Config.num(part["y"]),
+                            w: Config.num(part["width"]), h: otherH)
+                }
+                let placed = LayoutEngine.positionKeepingGap(
+                    x: x, y: y, w: w, h: Double(displayH),
+                    visibleWidth: Double(vf.width), visibleHeight: Double(vf.height),
+                    top: Double(top), others: others)
+                let nx = placed.x
+                let ny = placed.y
                 if nx != x || ny != y {
                     parts[i]["x"] = Int(nx.rounded())
                     parts[i]["y"] = Int(ny.rounded())

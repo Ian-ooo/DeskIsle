@@ -801,6 +801,56 @@ public enum LayoutEngine {
         return (nx, ny)
     }
 
+    /// 把分区拉回可见区域，同时尽量保住它和正上方分区之间的 `Layout.gap`。
+    ///
+    /// 底部本来要留一截边距。贴底的最后一个分区若为了这截边距被上移，
+    /// 会把和上一个分区的间距挤掉——启动时 `ensurePartitionsInBounds` 只做越界纠正，
+    /// 却会把已经排好的 16 点间距收成几个点。窗口按标准间距仍然完整落在可见区域内时，
+    /// 放弃底部边距、保住间距。窗口本身已经超出可见区域、间距又放不下时，仍然上移。
+    ///
+    /// 屏幕中部用户故意贴紧的分区不在此列：只有顶边已经压到（或越过）底部边距线时才介入。
+    ///
+    /// 坐标系与 `snappedPosition` 相同：屏幕相对、左上原点。`others` 只传同一块屏上的分区。
+    public static func positionKeepingGap(
+        x: Double, y: Double, w: Double, h: Double,
+        visibleWidth: Double, visibleHeight: Double,
+        top: Double,
+        others: [(x: Double, y: Double, w: Double, h: Double)],
+        sideMargin: Double? = nil,
+        bottomMargin: Double? = nil
+    ) -> (x: Double, y: Double) {
+        let side = sideMargin ?? Double(Layout.margin)
+        let bottom = bottomMargin ?? Double(Layout.gap)
+        let gap = Double(Layout.gap)
+
+        let minX = side
+        let maxX = visibleWidth - w - side
+        let nx = min(max(x, minX), max(minX, maxX))
+
+        let minY = top
+        let softMaxY = visibleHeight - h - bottom
+        let hardMaxY = visibleHeight - h
+        let yLimit = max(minY, softMaxY)
+
+        // 正上方、水平范围有重叠的分区：底边再加一个标准间距，就是本分区不该越过的上沿。
+        var gapFloor = minY
+        for o in others {
+            let overlapsX = nx < o.x + o.w && o.x < nx + w
+            guard overlapsX, o.y < y else { continue }
+            let oBottom = o.y + o.h
+            guard oBottom <= y + max(h, 0) else { continue }
+            gapFloor = max(gapFloor, oBottom + gap)
+        }
+
+        var ny = min(max(y, minY), yLimit)
+        // 顶边已经贴着（或越过）底部边距线：上移会吃掉间距，而按间距摆放仍完整落在可见区内。
+        let pressedToBottom = y > yLimit + 0.5 || abs(y - yLimit) <= 0.5
+        if pressedToBottom, ny < gapFloor, gapFloor <= max(minY, hardMaxY) {
+            ny = gapFloor
+        }
+        return (nx, ny)
+    }
+
     // MARK: - 对齐编排（读序 → 分派）
 
     /// 一次对齐的输入项 —— 由调用方（`AppDelegate` / 跨端对拍工具）从配置或窗口状态读出。

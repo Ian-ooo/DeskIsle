@@ -1931,16 +1931,16 @@ struct NotesView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .topLeading) {
-                NotesTextEditor(text: $text) {
-                    AppDelegate.shared?.updateNote(id, text)
-                }
                 if text.isEmpty {
-                    Text("在此输入便签内容…")
+                    Text("记点什么…")
                         .font(.system(size: 13))
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 8)
                         .padding(.top, 4)
                         .allowsHitTesting(false)
+                }
+                NotesTextEditor(text: $text) {
+                    AppDelegate.shared?.updateNote(id, text)
                 }
             }
             .padding(4)
@@ -2086,6 +2086,8 @@ private struct NotesTextEditor: NSViewRepresentable {
         textView.isAutomaticLinkDetectionEnabled = true
         textView.isSelectable = true
         textView.isEditable = true
+        // 分区底是深色的，系统默认插入点偏黑，点进去像没有光标。
+        textView.insertionPointColor = .labelColor
         textView.textContainerInset = NSSize(width: 4, height: 4)
         textView.autoresizingMask = [.width]
         textView.isHorizontallyResizable = false
@@ -2186,6 +2188,13 @@ private struct NotesTextEditor: NSViewRepresentable {
 }
 
 private final class NotesTextView: NSTextView {
+    override func mouseDown(with event: NSEvent) {
+        // 分区是 nonactivatingPanel，不先变成 key window，插入点不会闪。
+        window?.makeKey()
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
+
     override func mouseUp(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {
             let pt = convert(event.locationInWindow, from: nil)

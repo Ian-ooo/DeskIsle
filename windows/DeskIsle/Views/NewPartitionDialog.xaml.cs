@@ -42,6 +42,12 @@ namespace DeskIsle.Views
         private void SetType(string type, string icon, string defaultLabel)
         {
             _selectedType = type;
+            // XAML 里「映射」默认选中。加载 BAML 时会先挂上 Checked，再写入 IsChecked，
+            // 于是 Type_Checked 在名称框、图标前缀创建之前就进来了。
+            // 这里直接摸 TitleTextBox 会抛空引用，进程没有接住，表现为一点「新建分区」就退出。
+            if (TitleIconPrefix == null || TitleTextBox == null || FolderRow == null)
+                return;
+
             TitleIconPrefix.Text = icon + " ";
 
             if (TitleTextBox.Text == _lastDefaultTitle || string.IsNullOrWhiteSpace(TitleTextBox.Text))
@@ -158,24 +164,6 @@ namespace DeskIsle.Views
                 Height = initialHeight,
                 FolderPath = (_selectedType == "portal") ? _selectedFolder : null
             };
-
-            if (_selectedType == "todo")
-            {
-                ResultPartition.Todos.Add(new TodoItem
-                {
-                    Id = "todo-1",
-                    Text = "整理桌面核心工作文件",
-                    Completed = false,
-                    Priority = "high"
-                });
-                ResultPartition.Todos.Add(new TodoItem
-                {
-                    Id = "todo-2",
-                    Text = "规划项目迭代功能",
-                    Completed = true,
-                    Priority = "medium"
-                });
-            }
 
             DialogResult = true;
             Close();

@@ -368,5 +368,43 @@ namespace DeskIsle.Tests
                 Assert.Equal(kv.Value.Y, byGrid[kv.Key].Y, 6);
             }
         }
+
+        /// <summary>
+        /// 贴底的最后一个分区不能为了底部边距被上移、从而挤掉与上一个分区的间距。
+        /// 与 mac <c>testBottomClampKeepsGapWithPartitionAbove</c> 同一组数字。
+        /// </summary>
+        [Fact]
+        public void PositionKeepingGap_BottomClamp_KeepsGapWithPartitionAbove()
+        {
+            var above = new List<(double X, double Y, double W, double H)>
+            {
+                (348, 430, 316, 314),
+            };
+            var aligned = LayoutEngine.PositionKeepingGap(348, 760, 316, 200, 1512, 965, 100, above);
+            Assert.Equal(760, aligned.Y, 3);
+
+            var repaired = LayoutEngine.PositionKeepingGap(348, 749, 316, 200, 1512, 965, 100, above);
+            Assert.Equal(760, repaired.Y, 3);
+        }
+
+        [Fact]
+        public void PositionKeepingGap_LoneWindow_StillPulledOnScreen()
+        {
+            var r = LayoutEngine.PositionKeepingGap(
+                16, 900, 316, 200, 1512, 965, 100,
+                new List<(double X, double Y, double W, double H)>());
+            Assert.Equal(965 - 200 - 16, r.Y, 3);
+        }
+
+        [Fact]
+        public void PositionKeepingGap_FlushStackAwayFromBottom_IsLeftAlone()
+        {
+            var above = new List<(double X, double Y, double W, double H)>
+            {
+                (348, 100, 316, 314),
+            };
+            var r = LayoutEngine.PositionKeepingGap(348, 414, 316, 314, 1512, 965, 100, above);
+            Assert.Equal(414, r.Y, 3);
+        }
     }
 }

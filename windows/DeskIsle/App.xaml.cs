@@ -128,40 +128,27 @@ namespace DeskIsle
                 try { workArea = MonitorService.WorkingAreaDIP(screen, win); }
                 catch { workArea = SystemParameters.WorkArea; }
 
-                const double margin = 16.0;
                 double topMargin = 72.0; // 顶栏避让区
                 double w = model.Width > 0 ? model.Width : 260;
                 double h = model.IsCollapsed ? 44 : (model.Height > 0 ? model.Height : 300);
 
-                double minX = workArea.Left + margin;
-                double maxX = workArea.Right - w - margin;
-                double minY = workArea.Top + topMargin;
-                double maxY = workArea.Bottom - h - margin;
-
                 double curX = win.Left;
                 double curY = win.Top;
-
-                // 越界检查与弹性纠偏
-                double newX = curX;
-                double newY = curY;
-
-                if (maxX >= minX)
-                {
-                    newX = Math.Min(Math.Max(curX, minX), maxX);
-                }
-                else
-                {
-                    newX = minX;
-                }
-
-                if (maxY >= minY)
-                {
-                    newY = Math.Min(Math.Max(curY, minY), maxY);
-                }
-                else
-                {
-                    newY = minY;
-                }
+                var others = _partitionWindows
+                    .Where(o => !ReferenceEquals(o, win) && o.Model.ScreenId == model.ScreenId)
+                    .Select(o => (
+                        X: o.Left - workArea.Left,
+                        Y: o.Top - workArea.Top,
+                        W: o.Width,
+                        H: o.Model.IsCollapsed ? PartitionMetrics.HeaderHeight : o.Height))
+                    .ToList();
+                // 贴底上移会挤掉与上一个分区的间距；窗口仍能完整留在工作区内时保住 Gap。
+                var placed = LayoutEngine.PositionKeepingGap(
+                    curX - workArea.Left, curY - workArea.Top, w, h,
+                    workArea.Width, workArea.Height,
+                    topMargin, others);
+                double newX = workArea.Left + placed.X;
+                double newY = workArea.Top + placed.Y;
 
                 if (Math.Abs(newX - curX) > 1.0 || Math.Abs(newY - curY) > 1.0)
                 {

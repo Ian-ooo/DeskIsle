@@ -1025,6 +1025,64 @@ final class LayoutEngineTests: XCTestCase {
             topMargin: 100.0)
         XCTAssertEqual(farFromTop.y, 20, accuracy: 0.001)
     }
+
+    /// 启动越界纠正曾把贴底的最后一个分区上移，把和上一个分区的 16 点间距挤成几个点。
+    /// 窗口按标准间距仍然完整落在可见区内时，必须保住间距。
+    func testBottomClampKeepsGapWithPartitionAbove() {
+        let above = (x: 348.0, y: 430.0, w: 316.0, h: 314.0)
+        // 对齐落点 y=760（间距 16），底边 960，可见高 965。底部再留 16 会把它拉到 749。
+        let aligned = LayoutEngine.positionKeepingGap(
+            x: 348, y: 760, w: 316, h: 200,
+            visibleWidth: 1512, visibleHeight: 965,
+            top: 100, others: [above])
+        XCTAssertEqual(aligned.y, 760, accuracy: 0.001)
+
+        // 上一轮已经被夹到 749 的存档，重启时拉回 760。
+        let repaired = LayoutEngine.positionKeepingGap(
+            x: 348, y: 749, w: 316, h: 200,
+            visibleWidth: 1512, visibleHeight: 965,
+            top: 100, others: [above])
+        XCTAssertEqual(repaired.y, 760, accuracy: 0.001)
+    }
+
+    /// 没有上方分区时，越出可见区仍然要拉回来，并保留底部边距。
+    func testBottomClampStillPullsLoneWindowOnScreen() {
+        let r = LayoutEngine.positionKeepingGap(
+            x: 16, y: 900, w: 316, h: 200,
+            visibleWidth: 1512, visibleHeight: 965,
+            top: 100, others: [])
+        XCTAssertEqual(r.y, 965 - 200 - 16, accuracy: 0.001)
+    }
+
+    /// 屏幕中部的无缝贴合是用户摆的，启动时不要强行撑开。
+    func testFlushStackAwayFromBottomIsLeftAlone() {
+        let above = (x: 348.0, y: 100.0, w: 316.0, h: 314.0)
+        let r = LayoutEngine.positionKeepingGap(
+            x: 348, y: 414, w: 316, h: 314,
+            visibleWidth: 1512, visibleHeight: 965,
+            top: 100, others: [above])
+        XCTAssertEqual(r.y, 414, accuracy: 0.001)
+    }
+
+    /// 并排的高分区不算「正上方」，不能凭空造出纵向间距。
+    func testSideBySideDoesNotInventVerticalGap() {
+        let left = (x: 16.0, y: 100.0, w: 316.0, h: 905.0)
+        let r = LayoutEngine.positionKeepingGap(
+            x: 348, y: 100, w: 316, h: 314,
+            visibleWidth: 1512, visibleHeight: 965,
+            top: 100, others: [left])
+        XCTAssertEqual(r.y, 100, accuracy: 0.001)
+    }
+
+    /// 间距和可见区域放不下时，越界优先：仍然上移到含底部边距的位置。
+    func testOffScreenWinsWhenGapCannotFit() {
+        let above = (x: 348.0, y: 400.0, w: 316.0, h: 400.0)
+        let r = LayoutEngine.positionKeepingGap(
+            x: 348, y: 900, w: 316, h: 200,
+            visibleWidth: 1512, visibleHeight: 965,
+            top: 100, others: [above])
+        XCTAssertEqual(r.y, 965 - 200 - 16, accuracy: 0.001)
+    }
 }
 
 // MARK: - 自适应宽度（每屏一个结果）

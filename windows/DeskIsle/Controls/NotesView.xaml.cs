@@ -53,9 +53,18 @@ namespace DeskIsle.Controls
         private void UpdateStats()
         {
             string text = NotesTextBox.Text;
-            PlaceholderText.Visibility = string.IsNullOrEmpty(text) ? Visibility.Visible : Visibility.Collapsed;
+            PlaceholderText.Visibility = string.IsNullOrEmpty(text)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
             int lines = string.IsNullOrEmpty(text) ? 0 : text.Split('\n').Length;
             StatsText.Text = $"{text.Length} 字符 · {lines} 行";
+        }
+
+        private void NotesTextBox_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            // 分区窗口经常不是激活态，只靠点击不一定把插入点亮起来。
+            NotesTextBox.Focus();
+            Keyboard.Focus(NotesTextBox);
         }
 
         private void NotesTextBox_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)

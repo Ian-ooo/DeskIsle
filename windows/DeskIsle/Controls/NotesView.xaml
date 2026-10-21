@@ -13,10 +13,19 @@
         </Grid.RowDefinitions>
         <Border Grid.Row="0" Background="{StaticResource SubtleFillBrush}" CornerRadius="4" BorderBrush="#12FFFFFF" BorderThickness="1">
             <Grid>
+                <TextBlock x:Name="PlaceholderText"
+                           Text="记点什么…"
+                           Foreground="#55FFFFFF"
+                           FontSize="12"
+                           FontFamily="{StaticResource FluentFontFamily}"
+                           Padding="8"
+                           IsHitTestVisible="False"
+                           Visibility="Visible"/>
                 <TextBox x:Name="NotesTextBox" 
                          Background="Transparent" 
                          BorderThickness="0" 
                          Foreground="{StaticResource TextPrimaryBrush}" 
+                         CaretBrush="{StaticResource TextPrimaryBrush}"
                          FontSize="12" 
                          FontFamily="{StaticResource FluentFontFamily}" 
                          AcceptsReturn="True" 
@@ -24,16 +33,9 @@
                          VerticalScrollBarVisibility="Auto" 
                          Padding="8" 
                          TextChanged="NotesTextBox_TextChanged"
+                         PreviewMouseLeftButtonDown="NotesTextBox_PreviewMouseLeftButtonDown"
                          PreviewMouseLeftButtonUp="NotesTextBox_PreviewMouseLeftButtonUp"
                          ContextMenuOpening="NotesTextBox_ContextMenuOpening"/>
-                <TextBlock x:Name="PlaceholderText"
-                           Text="在此输入便签内容…"
-                           Foreground="#55FFFFFF"
-                           FontSize="12"
-                           FontFamily="{StaticResource FluentFontFamily}"
-                           Padding="8"
-                           IsHitTestVisible="False"
-                           Visibility="Visible"/>
             </Grid>
         </Border>
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,4,0">
