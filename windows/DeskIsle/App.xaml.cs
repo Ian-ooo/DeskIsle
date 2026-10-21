@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Forms;
 using System.Windows.Interop;
 using System.Windows.Threading;
+using DeskIsle.Controls;
 using DeskIsle.Models;
 using DeskIsle.Native;
 using DeskIsle.Services;
@@ -55,6 +56,9 @@ namespace DeskIsle
             }
 
             base.OnStartup(e);
+
+            // 复制文件时双写系统剪贴板。剪切不走这条（见 FileClipboard.Cut）。
+            FileClipboard.SyncToSystem = SystemFileClipboard.WriteFiles;
 
             _config = new Config();
             _config.OnConfigChanged += OnConfigUpdated;
@@ -168,7 +172,7 @@ namespace DeskIsle
                 }
             }
 
-            _config.SaveSoon();
+            _config.Save();
         }
 
         // MARK: - 托盘

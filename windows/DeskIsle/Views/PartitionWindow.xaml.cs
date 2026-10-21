@@ -1,11 +1,16 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Controls;
+using System.Windows.Threading;
 using DeskIsle.Controls;
 using DeskIsle.Models;
 using DeskIsle.Native;
@@ -493,7 +498,10 @@ namespace DeskIsle.Views
             AutoFit(resetWidth: true, expandIfCollapsed: true);
         }
 
-        private void Collapse_Click(object sender, RoutedEventArgs e)
+        private void Collapse_Click(object sender, RoutedEventArgs e) => ToggleCollapse();
+
+        /// <summary>折叠 / 展开。标题栏按钮和双击标题栏空白处共用。</summary>
+        private void ToggleCollapse()
         {
             if (BlockedByLock(Model.IsCollapsed ? "展开" : "折叠")) return;
             Model.IsCollapsed = !Model.IsCollapsed;

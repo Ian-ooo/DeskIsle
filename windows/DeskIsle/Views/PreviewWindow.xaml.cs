@@ -75,9 +75,9 @@ namespace DeskIsle.Views
                     win.NameText.Text = Path.GetFileName(path);
 
                     int lines = text.Split('\n').Length;
-                    string bytesText = "";
-                    try { bytesText = FormatBytes(new FileInfo(path).Length); } catch { }
-                    win.MetaText.Text = $"{lines} 行文本{(string.IsNullOrEmpty(bytesText) ? "" : "　·　" + bytesText)}";
+                    string textSize = "";
+                    try { textSize = FormatBytes(new FileInfo(path).Length); } catch { }
+                    win.MetaText.Text = $"{lines} 行文本{(string.IsNullOrEmpty(textSize) ? "" : "　·　" + textSize)}";
 
                     if (!win.IsVisible) win.Show();
                     win.SizeToFit(600, 440);

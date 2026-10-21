@@ -60,17 +60,23 @@ namespace DeskIsle.Controls
 
             int moved = 0;
             var failed = new List<string>();
+            var pairs = new List<PathPair>();
 
             foreach (var path in paths)
             {
                 var target = FileMover.Move(path, directory, out bool skipped,
                                            replace: decision == MoveConflictDecision.Replace);
-                if (target != null) moved++;
+                if (target != null)
+                {
+                    moved++;
+                    pairs.Add(new PathPair(path, target));
+                }
                 else if (!skipped) failed.Add(Path.GetFileName(path));
             }
 
             if (moved > 0)
             {
+                FileUndoStack.Shared.PushMoveBack(pairs, "移动到此分区");
                 onChanged?.Invoke();
                 ToastWindow.ShowToast(
                     $"已移入 {moved} 个文件",

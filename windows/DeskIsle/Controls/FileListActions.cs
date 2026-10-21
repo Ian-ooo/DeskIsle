@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using DeskIsle.Native;
@@ -116,6 +118,7 @@ namespace DeskIsle.Controls
 
                     // 【第 4 组】：剪贴板
                     menu.Add(Item(MenuIcons.Copy, "拷贝", () => CopyToClipboard(targets)));
+                    menu.Add(Item(MenuIcons.Shortcut, "复制路径", () => CopyPathsAsText(targets)));
                     menu.Add(Item(MenuIcons.Cut, "剪切", () => CutToClipboard(targets)));
                 }
             }
@@ -149,6 +152,7 @@ namespace DeskIsle.Controls
 
                 // 【第 4 组】：剪贴板
                 menu.Add(Item(MenuIcons.Copy, $"拷贝（{n} 项）", () => CopyToClipboard(targets)));
+                menu.Add(Item(MenuIcons.Shortcut, $"复制路径（{n} 项）", () => CopyPathsAsText(targets)));
                 menu.Add(Item(MenuIcons.Cut, $"剪切（{n} 项）", () => CutToClipboard(targets)));
             }
             return menu;
@@ -175,7 +179,8 @@ namespace DeskIsle.Controls
             menu.Add(Item(MenuIcons.NewFolder, "新建文件夹", newFolder));
             menu.Add(Item(MenuIcons.NewFile, "新建文本文档", newTextFile));
             var paste = Item(MenuIcons.Paste, "粘贴", Paste);
-            paste.IsEnabled = !FileClipboard.Shared.IsEmpty;
+            // 内部剪贴板空着时，资源管理器里复制的文件仍应能贴。
+            paste.IsEnabled = !FileClipboard.Shared.IsEmpty || SystemFileClipboard.HasFiles();
             menu.Add(paste);
             menu.Add(new Separator());
             menu.Add(Item(MenuIcons.SelectAll, "全选", () =>
@@ -227,6 +232,27 @@ namespace DeskIsle.Controls
             ReportClipboard("已剪切", paths.Count);
         }
 
+        /// <summary>
+        /// 把路径写成纯文本放到系统剪贴板，供终端、便签、地址栏粘贴。
+        /// 多项用换行隔开。不碰 <see cref="FileClipboard"/>，避免把上一次的文件剪切清掉。
+        /// </summary>
+        public static void CopyPathsAsText(IReadOnlyList<string> paths)
+        {
+            var lines = paths.Where(p => !string.IsNullOrEmpty(p)).ToList();
+            if (lines.Count == 0) return;
+            try
+            {
+                Clipboard.SetText(string.Join(Environment.NewLine, lines));
+            }
+            catch (Exception ex)
+            {
+                ToastWindow.ShowToast("复制路径失败", ex.Message, warn: true);
+                return;
+            }
+            string detail = lines.Count == 1 ? lines[0] : $"{lines.Count} 个路径";
+            ToastWindow.ShowToast("已复制路径", detail, warn: false);
+        }
+
         private static void ReportClipboard(string verb, int count)
         {
             ToastWindow.ShowToast(count == 1 ? $"{verb} 1 项" : $"{verb} {count} 项",
@@ -234,22 +260,36 @@ namespace DeskIsle.Controls
         }
 
         /// <summary>
-        /// 把内部剪贴板贴到 <paramref name="directory"/>。
+        /// 把剪贴板贴到 <paramref name="directory"/>。
         /// <para>
-        /// 三条规矩与拖入完全一致（那里踩过的坑这里一样会踩）：
-        /// 1. <b>绝不覆盖</b> —— 同名就自动加「 2」后缀（<see cref="FileMover.Destination"/>）；
+        /// 内部剪贴板优先。它空着时改读系统剪贴板（资源管理器里复制再回来贴）。
+        /// 系统剪贴板没有剪切标记，这条退路一律按复制处理。
+        /// </para>
+        /// <para>
+        /// 三条规矩与拖入完全一致：
+        /// 1. <b>绝不默认覆盖</b> —— 同名先问保留两者 / 停止 / 替换；
         /// 2. <b>不能把文件夹贴进自己的子孙目录</b>；
         /// 3. 剪切时<b>同目录 = no-op</b>，否则会报告一次假失败。
         /// </para>
         /// </summary>
         public static void PasteInto(string directory, Action afterChange)
         {
-            var clip = FileClipboard.Shared;
-            if (clip.IsEmpty || string.IsNullOrEmpty(directory)) return;
+            if (string.IsNullOrEmpty(directory)) return;
 
-            // 同名冲突先问用户（与拖入、mac / Electron 同规则）。
+            var clip = FileClipboard.Shared;
+            bool fromSystem = clip.IsEmpty;
+            IReadOnlyList<string> paths = fromSystem ? SystemFileClipboard.ReadFiles() : clip.Paths.ToList();
+            bool moving = !fromSystem && clip.IsCut;
+            if (paths.Count == 0)
+            {
+                ToastWindow.ShowToast("没有可粘贴的内容",
+                    "先在 DeskIsle 里 Ctrl+C / Ctrl+X，或在资源管理器里复制文件", warn: false);
+                return;
+            }
+
+            // 同名冲突先问用户（与拖入、mac 同规则）。
             // 「停止」= 整体取消，且**不清空**剪切板，让用户换个动作重试。
-            var conflicts = FileMover.Conflicts(clip.Paths.ToArray(), directory,
+            var conflicts = FileMover.Conflicts(paths.ToArray(), directory,
                 p => File.Exists(p) || Directory.Exists(p));
             var decision = conflicts.Count == 0
                 ? MoveConflictDecision.KeepBoth
@@ -258,8 +298,9 @@ namespace DeskIsle.Controls
 
             int done = 0;
             var failed = new List<string>();
+            var pairs = new List<PathPair>();
 
-            foreach (var source in clip.Paths.ToList())
+            foreach (var source in paths)
             {
                 string name = Path.GetFileName(source);
                 if (FileMover.IsSelfOrDescendant(directory, source))
@@ -269,21 +310,23 @@ namespace DeskIsle.Controls
                 }
                 if (!File.Exists(source) && !Directory.Exists(source))
                 {
-                    failed.Add(name);   // 剪切之后又在别处删掉了：给个提示总比静默好
+                    failed.Add(name);
                     continue;
                 }
 
-                if (clip.IsCut)
+                if (moving)
                 {
-                    // 剪切 = 移动；replace 时 FileMover.Move 会先删目标再移动。
                     var t = FileMover.Move(source, directory, out bool skipped,
                                           replace: decision == MoveConflictDecision.Replace);
-                    if (t != null) done++;
+                    if (t != null)
+                    {
+                        done++;
+                        pairs.Add(new PathPair(source, t));
+                    }
                     else if (!skipped) failed.Add(name);
                     continue;
                 }
 
-                // 复制分支
                 string target;
                 if (decision == MoveConflictDecision.Replace)
                 {
@@ -314,6 +357,7 @@ namespace DeskIsle.Controls
                     if (Directory.Exists(source)) CopyDirectory(source, target);
                     else File.Copy(source, target, overwrite: true);
                     done++;
+                    pairs.Add(new PathPair(source, target));
                 }
                 catch (Exception ex)
                 {
@@ -324,8 +368,12 @@ namespace DeskIsle.Controls
 
             if (done > 0)
             {
+                if (moving)
+                    FileUndoStack.Shared.PushMoveBack(pairs, "粘贴（移动）");
+                else
+                    FileUndoStack.Shared.PushRemoveCopies(pairs.Select(p => p.To), "粘贴（复制）");
                 afterChange();
-                ToastWindow.ShowToast(clip.IsCut ? $"已粘贴（移动 {done} 项）" : $"已粘贴（复制 {done} 项）",
+                ToastWindow.ShowToast(moving ? $"已粘贴（移动 {done} 项）" : $"已粘贴（复制 {done} 项）",
                     Path.GetFileName(FileMover.Normalize(directory)), warn: false);
             }
             if (failed.Count > 0)
@@ -333,9 +381,9 @@ namespace DeskIsle.Controls
                 ToastWindow.ShowToast($"{failed.Count} 项没能粘贴",
                     string.Join("、", failed.Take(2)), warn: true);
             }
-            // ⚠️ 剪切是一次性的：源已经不在原处了，留着再贴一次只会报错。
-            // 但「停止」= 整体取消，保留剪切板让用户重试。
-            if (clip.IsCut && decision != MoveConflictDecision.Stop) clip.Clear();
+            // 剪切是一次性的：源已经不在原处了，留着再贴一次只会报错。
+            // 「停止」已在上面返回，不会走到这里。
+            if (moving) clip.Clear();
         }
 
         private static void CopyDirectory(string source, string target)
@@ -353,17 +401,26 @@ namespace DeskIsle.Controls
 
         // MARK: - 批量操作
 
-        /// <summary>批量移到回收站。逐项进行：一个卡住不该丢掉其余的。</summary>
+        /// <summary>批量移到回收站。逐项进行：一个卡住不该丢掉其余的。成功的项记入撤销栈。</summary>
         public static void SendToRecycleBin(IReadOnlyList<string> paths)
         {
             if (paths.Count == 0) return;
             int done = 0;
             var failed = new List<string>();
+            var pairs = new List<PathPair>();
             foreach (var p in paths)
             {
-                if (Win32.SendToRecycleBin(p)) done++;
-                else failed.Add(Path.GetFileName(p));
+                if (!Win32.TrySendToRecycleBin(p, out string? trashed))
+                {
+                    failed.Add(Path.GetFileName(p));
+                    continue;
+                }
+                done++;
+                if (!string.IsNullOrEmpty(trashed))
+                    pairs.Add(new PathPair(p, trashed));
             }
+            if (pairs.Count > 0)
+                FileUndoStack.Shared.PushRestoreFromTrash(pairs, "移到回收站");
             if (done > 0)
             {
                 ToastWindow.ShowToast(done == 1 ? "已移到回收站" : $"已移到回收站（{done} 项）",
@@ -374,6 +431,29 @@ namespace DeskIsle.Controls
                 ToastWindow.ShowToast($"{failed.Count} 项没能移到回收站",
                     string.Join("、", failed.Take(2)), warn: true);
             }
+        }
+
+        /// <summary>撤销最近一次文件操作（Ctrl+Z）。没有可撤的、或文件已被改动，都只提示、不再动磁盘。</summary>
+        public static bool UndoLast()
+        {
+            var rec = FileUndoStack.Shared.Pop();
+            if (rec == null)
+            {
+                ToastWindow.ShowToast("没有可撤销的操作", null, warn: false);
+                return false;
+            }
+
+            var (done, failed) = FileUndoApply.Apply(rec);
+            if (done <= 0)
+            {
+                ToastWindow.ShowToast("无法撤销", "相关文件已被改动，DeskIsle 不会再动它们", warn: true);
+                return false;
+            }
+
+            string title = done == 1 ? $"已撤销：{rec.Verb} 1 项" : $"已撤销：{rec.Verb} {done} 项";
+            string? detail = failed == 0 ? null : $"{failed} 项已跳过（可能被改动过）";
+            ToastWindow.ShowToast(title, detail, warn: false);
+            return true;
         }
 
         /// <summary>多选「在资源管理器中定位」—— 一次 explorer 调用选中全部。</summary>
@@ -457,9 +537,8 @@ namespace DeskIsle.Controls
                     return true;
 
                 case FileKeyAction.Undo:
-                    // 撤销栈目前只在 mac 端落地（`mac/Sources/DeskIsle/FileUndo.swift`）。
-                    // 这里刻意不吞掉：在本端实现之前，Ctrl+Z 交还 WPF，比「装作生效却什么都没发生」好。
-                    return false;
+                    if (UndoLast()) afterChange();
+                    return true;
 
                 default:
                     return false;
@@ -545,6 +624,7 @@ namespace DeskIsle.Controls
         public static void Duplicate(IReadOnlyList<string> paths, Action afterChange)
         {
             int done = 0;
+            var created = new List<string>();
             foreach (var path in paths)
             {
                 string dir = Path.GetDirectoryName(path) ?? "";
@@ -564,11 +644,13 @@ namespace DeskIsle.Controls
                     if (Directory.Exists(path)) CopyDirectory(path, dest);
                     else File.Copy(path, dest);
                     done++;
+                    created.Add(dest);
                 }
                 catch { }
             }
             if (done > 0)
             {
+                FileUndoStack.Shared.PushRemoveCreated(created, "制作副本");
                 afterChange();
                 ToastWindow.ShowToast(done == 1 ? "已创建副本" : $"已创建 {done} 项副本", "", warn: false);
             }

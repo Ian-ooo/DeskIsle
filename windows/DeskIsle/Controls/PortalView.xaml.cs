@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using DeskIsle.Models;
 using DeskIsle.Services;
 using DeskIsle.Views;
@@ -18,6 +20,19 @@ namespace DeskIsle.Controls
         private Action? _onDataChanged;
         private string _currentPath = string.Empty;
         private FileSystemWatcher? _watcher;
+        /// <summary>监视器正在投递事件。失败或目录不存在时为 false，改由 <see cref="_fallbackPoll"/> 顶上。</summary>
+        private bool _watcherHealthy;
+        /// <summary>文件系统事件的合流定时器。窗口内再来的事件不再重排，约 200ms 刷一次。</summary>
+        private DispatcherTimer? _coalesceTimer;
+        private bool _coalesceArmed;
+        /// <summary>监视器不可用时的兜底。与 mac 上流建立失败后的 2s 轮询同一档。</summary>
+        private DispatcherTimer? _fallbackPoll;
+        /// <summary>进行中的后台扫描代数。导航或手动刷新把它加一，过期结果直接丢掉。</summary>
+        private int _scanGeneration;
+        /// <summary>上一份已经画上界面的扫描，用来判断「这次结果没变，别重绑列表」。</summary>
+        private bool _hasListing;
+        private string _appliedPath = string.Empty;
+        private List<PortalDirEntry> _applied = new();
         private readonly List<FileDisplayItem> _allItems = new();
         /// <summary>条目选中集（纯逻辑，判据与 mac / Electron 同源）。</summary>
         private readonly FileSelection _selection = new();
@@ -38,6 +53,7 @@ namespace DeskIsle.Controls
             // 也不能直接用 IsVisible 之类：分区窗口会被反复重建，这里必须幂等。
             Loaded += AttachKeyHandling;
             Loaded += AttachSelectionScope;
+            Unloaded += (_, _) => StopWatching();
         }
 
         /// <summary>
@@ -98,81 +114,233 @@ namespace DeskIsle.Controls
 
         private void InitWatcher()
         {
-            _watcher?.Dispose();
-            if (string.IsNullOrEmpty(_currentPath) || !Directory.Exists(_currentPath)) return;
-
-            try
-            {
-                _watcher = new FileSystemWatcher(_currentPath)
-                {
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite,
-                    EnableRaisingEvents = true
-                };
-
-                _watcher.Created += (_, _) => Dispatcher.Invoke(ReloadItems);
-                _watcher.Deleted += (_, _) => Dispatcher.Invoke(ReloadItems);
-                _watcher.Renamed += (_, _) => Dispatcher.Invoke(ReloadItems);
-                _watcher.Changed += (_, _) => Dispatcher.Invoke(ReloadItems);
-            }
-            catch { }
-        }
-
-        public void ReloadItems()
-        {
-            _allItems.Clear();
-            UpdateBreadcrumbs();
-
+            DisposeWatcher();
             if (string.IsNullOrEmpty(_currentPath) || !Directory.Exists(_currentPath))
             {
-                if (!string.IsNullOrEmpty(_partition?.FolderPath) && Directory.Exists(_partition.FolderPath))
-                {
-                    _currentPath = _partition.FolderPath;
-                    UpdateBreadcrumbs();
-                }
-                else
-                {
-                    ApplyFilterAndSort();
-                    return;
-                }
+                _watcherHealthy = false;
+                StartFallbackPoll();
+                return;
             }
 
             try
             {
-                var dirInfo = new DirectoryInfo(_currentPath);
-
-                // 一次遍历，「目录 / 文件 / 包」一次分完。
-                //
-                // ⚠️ 关键点：`.app` 这类 **macOS 的包**在文件系统上是目录
-                // （`FileAttributes.Directory` 为真），但它语义上是**单个不可展开的项** ——
-                // 必须当文件处理，否则它会显示成文件夹、双击「展开」成一串 `Contents/…`。
-                // 判定口径见 `FileKinds`，与 mac / Electron 三端同源。
-                foreach (var info in dirInfo.EnumerateFileSystemInfos())
+                var watcher = new FileSystemWatcher(_currentPath)
                 {
-                    if ((info.Attributes & FileAttributes.Hidden) != 0) continue;
-
-                    bool physicalDir = (info.Attributes & FileAttributes.Directory) != 0;
-                    bool isPackage = physicalDir && FileKinds.IsPackageName(info.Name);
-                    bool isDir = FileKinds.IsOpaqueDirectory(info.Name, physicalDir);
-
-                    // 目录恒置顶在排序里完成（见 ApplyFilterAndSort），这里不必分批添加
-                    _allItems.Add(new FileDisplayItem
-                    {
-                        Path = info.FullName,
-                        Name = info.Name,
-                        Icon = isDir ? "📁" : (isPackage ? "📦" : FileUI.GetFileIcon(info.Extension)),
-                        // 包一律走「文件」图标路径：Windows 取不到应用图标（它不认识包），
-                        // 返回扩展名对应的通用图标 —— 这已是最诚实的答案，总好过文件夹图标。
-                        IconImage = IconService.GetIcon(info.FullName, isDir),
-                        SizeText = isDir
-                            ? "文件夹"
-                            : (info is FileInfo fi ? FileUI.FormatFileSize(fi.Length) : "—"),
-                        IsDirectory = isDir
-                    });
-                }
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite,
+                    // 必须在 EnableRaisingEvents 之前设。默认 8KB，大批量复制时会溢出并停掉事件。
+                    InternalBufferSize = 64 * 1024,
+                    EnableRaisingEvents = false
+                };
+                watcher.Created += (_, _) => OnWatcherSignal();
+                watcher.Deleted += (_, _) => OnWatcherSignal();
+                watcher.Changed += (_, _) => OnWatcherSignal();
+                watcher.Renamed += (_, _) => OnWatcherSignal();
+                watcher.Error += (_, _) => OnWatcherError();
+                watcher.EnableRaisingEvents = true;
+                _watcher = watcher;
+                _watcherHealthy = true;
+                StopFallbackPoll();
             }
-            catch { }
+            catch
+            {
+                _watcherHealthy = false;
+                StartFallbackPoll();
+            }
+        }
 
+        /// <summary>
+        /// 监视器线程上来的信号。只负责排队，不在这里扫目录。
+        /// 用 BeginInvoke：Invoke 会把监视器线程堵在 UI 上，UI 再等文件锁时会互锁。
+        /// </summary>
+        private void OnWatcherSignal()
+        {
+            try
+            {
+                if (Dispatcher.CheckAccess()) ArmCoalesce();
+                else Dispatcher.BeginInvoke(new Action(ArmCoalesce));
+            }
+            catch (InvalidOperationException) { }
+        }
+
+        /// <summary>
+        /// 合流：第一个事件后 200ms 刷一次，窗口内后续事件不再把定时器往后推。
+        /// 持续复制时大约每 200ms 一轮，而不是等写入完全停下来。
+        /// </summary>
+        private void ArmCoalesce()
+        {
+            if (_coalesceArmed) return;
+            _coalesceArmed = true;
+            if (_coalesceTimer == null)
+            {
+                _coalesceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+                _coalesceTimer.Tick += (_, _) =>
+                {
+                    _coalesceTimer.Stop();
+                    _coalesceArmed = false;
+                    BeginBackgroundReload();
+                };
+            }
+            _coalesceTimer.Stop();
+            _coalesceTimer.Start();
+        }
+
+        private void OnWatcherError()
+        {
+            try
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    _watcherHealthy = false;
+                    DisposeWatcher();
+                    StartFallbackPoll();
+                    ArmCoalesce();
+                }));
+            }
+            catch (InvalidOperationException) { }
+        }
+
+        private void StartFallbackPoll()
+        {
+            if (_fallbackPoll == null)
+            {
+                _fallbackPoll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                _fallbackPoll.Tick += (_, _) =>
+                {
+                    if (_watcherHealthy)
+                    {
+                        _fallbackPoll.Stop();
+                        return;
+                    }
+                    InitWatcher();
+                    BeginBackgroundReload();
+                };
+            }
+            if (!_fallbackPoll.IsEnabled)
+                _fallbackPoll.Start();
+        }
+
+        private void StopFallbackPoll() => _fallbackPoll?.Stop();
+
+        private void DisposeWatcher()
+        {
+            if (_watcher == null) return;
+            try { _watcher.EnableRaisingEvents = false; } catch { }
+            _watcher.Dispose();
+            _watcher = null;
+        }
+
+        private void StopWatching()
+        {
+            _scanGeneration++;
+            _coalesceArmed = false;
+            _coalesceTimer?.Stop();
+            StopFallbackPoll();
+            _watcherHealthy = false;
+            DisposeWatcher();
+        }
+
+        /// <summary>
+        /// 当前目录没了就退回分区根目录。返回 true 表示路径真的换过，调用方要重画面包屑。
+        /// </summary>
+        private bool EnsureCurrentDirectory()
+        {
+            if (!string.IsNullOrEmpty(_currentPath) && Directory.Exists(_currentPath))
+                return false;
+            string? root = _partition?.FolderPath;
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
+                return false;
+            if (PathsEqual(_currentPath, root))
+                return false;
+            _currentPath = root;
+            InitWatcher();
+            return true;
+        }
+
+        /// <summary>手动刷新：调用方（新建文件后立刻选中）依赖这次调用返回时列表已经是新的。</summary>
+        public void ReloadItems()
+        {
+            _coalesceArmed = false;
+            _coalesceTimer?.Stop();
+            _scanGeneration++;
+            EnsureCurrentDirectory();
+            UpdateBreadcrumbs();
+            ApplyEntries(PortalDirectoryScan.Read(_currentPath));
+        }
+
+        /// <summary>监视器 / 轮询触发的刷新。扫描在后台，回来时若用户已经切了目录则丢弃。</summary>
+        private void BeginBackgroundReload()
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(BeginBackgroundReload));
+                return;
+            }
+
+            if (EnsureCurrentDirectory())
+                UpdateBreadcrumbs();
+
+            int gen = ++_scanGeneration;
+            string path = _currentPath;
+            Task.Run(() => PortalDirectoryScan.Read(path)).ContinueWith(t =>
+            {
+                IReadOnlyList<PortalDirEntry> entries = t.IsFaulted || t.IsCanceled
+                    ? System.Array.Empty<PortalDirEntry>()
+                    : t.Result;
+                try
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (gen != _scanGeneration) return;
+                        if (!PathsEqual(path, _currentPath)) return;
+                        ApplyEntries(entries);
+                    }));
+                }
+                catch (InvalidOperationException) { }
+            });
+        }
+
+        /// <summary>
+        /// 把一份扫描画到列表上。同一目录、条目逐项相同、又没有待恢复焦点时什么都不做，
+        /// 避免把滚动位置和选区重绑掉。
+        /// </summary>
+        private void ApplyEntries(IReadOnlyList<PortalDirEntry> entries)
+        {
+            if (_hasListing
+                && PathsEqual(_appliedPath, _currentPath)
+                && string.IsNullOrEmpty(_pendingRestoreFocusPath)
+                && PortalDirectoryScan.Same(_applied, entries))
+            {
+                return;
+            }
+
+            _hasListing = true;
+            _appliedPath = _currentPath;
+            _applied = new List<PortalDirEntry>(entries);
+            _allItems.Clear();
+            foreach (var entry in entries)
+            {
+                // 包一律走「文件」图标路径：Windows 取不到应用图标（它不认识包），
+                // 返回扩展名对应的通用图标 —— 这已是最诚实的答案，总好过文件夹图标。
+                _allItems.Add(new FileDisplayItem
+                {
+                    Path = entry.FullPath,
+                    Name = entry.Name,
+                    Icon = entry.IsDirectory ? "📁" : (entry.IsPackage ? "📦" : FileUI.GetFileIcon(entry.Extension)),
+                    IconImage = IconService.GetIcon(entry.FullPath, entry.IsDirectory),
+                    SizeText = entry.IsDirectory
+                        ? "文件夹"
+                        : (entry.Size < 0 ? "—" : FileUI.FormatFileSize(entry.Size)),
+                    IsDirectory = entry.IsDirectory
+                });
+            }
             ApplyFilterAndSort();
+        }
+
+        private static bool PathsEqual(string? a, string? b)
+        {
+            string left = (a ?? string.Empty).TrimEnd('\\', '/');
+            string right = (b ?? string.Empty).TrimEnd('\\', '/');
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
         }
 
         private void UpdateBreadcrumbs()
@@ -444,6 +612,7 @@ namespace DeskIsle.Controls
             try
             {
                 Directory.CreateDirectory(target);
+                FileUndoStack.Shared.PushRemoveCreated(new[] { target }, "新建文件夹");
                 ReloadItems();
             }
             catch { }
@@ -463,9 +632,9 @@ namespace DeskIsle.Controls
             try
             {
                 File.WriteAllText(target, string.Empty);
+                FileUndoStack.Shared.PushRemoveCreated(new[] { target }, "新建文本文件");
                 ReloadItems();
-                _selection.Clear();
-                _selection.Add(target);
+                _selection.Click(target, _visible.Select(x => x.Path).ToList());
                 ApplySelectionToItemsAndRefresh();
                 var targetItem = _visible.FirstOrDefault(x => x.Path == target);
                 if (targetItem != null) ScrollToItem(targetItem);
@@ -948,6 +1117,8 @@ namespace DeskIsle.Controls
                 string newPath = Path.Combine(dir, newName);
                 if (Directory.Exists(path)) Directory.Move(path, newPath);
                 else File.Move(path, newPath);
+                if (!string.Equals(path, newPath, StringComparison.Ordinal))
+                    FileUndoStack.Shared.PushRename(newPath, name, "重命名");
                 ReloadItems();
             }
             catch (Exception ex)

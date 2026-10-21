@@ -31,6 +31,7 @@
     <Compile Include="..\..\DeskIsle\Services\LayoutEngine.cs" Link="Src\Services\LayoutEngine.cs" />
     <Compile Include="..\..\DeskIsle\Services\PartitionMetrics.cs" Link="Src\Services\PartitionMetrics.cs" />
     <Compile Include="..\..\DeskIsle\Services\FileKinds.cs" Link="Src\Services\FileKinds.cs" />
+    <Compile Include="..\..\DeskIsle\Services\PortalDirectoryScan.cs" Link="Src\Services\PortalDirectoryScan.cs" />
     <Compile Include="..\..\DeskIsle\Services\QueryMatcher.cs" Link="Src\Services\QueryMatcher.cs" />
     <Compile Include="..\..\DeskIsle\Services\PartitionTitle.cs" Link="Src\Services\PartitionTitle.cs" />
     <Compile Include="..\..\DeskIsle\Services\DeskFont.cs" Link="Src\Services\DeskFont.cs" />
@@ -47,6 +48,9 @@
     <Compile Include="..\..\DeskIsle\Models\JsonCompat.cs" Link="Src\Models\JsonCompat.cs" />
     <!-- 条目选中判据：纯字符串/集合运算，与 mac DeskIsleCore、Electron utils 同源 -->
     <Compile Include="..\..\DeskIsle\Services\FileSelection.cs" Link="Src\Services\FileSelection.cs" />
+    <Compile Include="..\..\DeskIsle\Services\FileClipboard.cs" Link="Src\Services\FileClipboard.cs" />
+    <Compile Include="..\..\DeskIsle\Services\FileUndo.cs" Link="Src\Services\FileUndo.cs" />
+    <Compile Include="..\..\DeskIsle\Services\RecycleBinIndex.cs" Link="Src\Services\RecycleBinIndex.cs" />
     <!-- 文件操作的键盘意图：只用 System，与 mac DeskIsleCore 同源 -->
     <Compile Include="..\..\DeskIsle\Services\FileKeyShortcuts.cs" Link="Src\Services\FileKeyShortcuts.cs" />
     <!-- 拖出的发起判据：纯数值比较，与 mac DeskIsleCore/FileDragLaunch.swift 同源。

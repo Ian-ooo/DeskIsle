@@ -1,5 +1,7 @@
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
+using DeskIsle.Services;
 
 namespace DeskIsle.Native
 {
@@ -67,6 +69,7 @@ namespace DeskIsle.Native
         public const ushort FOF_ALLOWUNDO = 0x0040;
         public const ushort FOF_NOCONFIRMATION = 0x0010;
         public const ushort FOF_SILENT = 0x0004;
+        public const ushort FOF_WANTMAPPINGHANDLE = 0x0020;
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
         public struct SHFILEOPSTRUCT
@@ -87,6 +90,9 @@ namespace DeskIsle.Native
 
         [DllImport("shell32.dll", CharSet = CharSet.Auto)]
         public static extern int SHFileOperation(ref SHFILEOPSTRUCT FileOp);
+
+        [DllImport("shell32.dll")]
+        public static extern void SHFreeNameMappings(IntPtr hNameMappings);
 
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -245,24 +251,66 @@ namespace DeskIsle.Native
         }
 
         /// <summary>
-        /// 安全将文件或目录移动到 Windows 回收站
+        /// 安全将文件或目录移动到 Windows 回收站。
         /// </summary>
-        public static bool SendToRecycleBin(string path)
+        public static bool SendToRecycleBin(string path) => TrySendToRecycleBin(path, out _);
+
+        /// <summary>
+        /// 移入回收站，并尽量交回它在回收站里的实际路径（Ctrl+Z 靠它捡回来）。
+        /// 壳层的改名映射优先；没有映射时再按 <c>$I</c> 索引对原路径。
+        /// </summary>
+        public static bool TrySendToRecycleBin(string path, out string? recycledPath)
         {
+            recycledPath = null;
             try
             {
                 var fileOp = new SHFILEOPSTRUCT
                 {
                     wFunc = FO_DELETE,
                     pFrom = path + '\0' + '\0', // 必须双 null 结尾
-                    fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT
+                    fFlags = (ushort)(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_WANTMAPPINGHANDLE),
+                    hNameMappings = IntPtr.Zero
                 };
                 int result = SHFileOperation(ref fileOp);
-                return result == 0 && !fileOp.fAnyOperationsAborted;
+                string? mapped = TakeMappedNewPath(fileOp.hNameMappings);
+                if (result != 0 || fileOp.fAnyOperationsAborted) return false;
+
+                if (!string.IsNullOrEmpty(mapped) && (File.Exists(mapped) || Directory.Exists(mapped)))
+                    recycledPath = mapped;
+                else
+                    recycledPath = RecycleBinIndex.LocateFor(path);
+                return true;
             }
             catch
             {
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// <c>hNameMappings</c> 是「个数 + 指向 SHNAMEMAPPING 数组的指针」。用完必须释放。
+        /// </summary>
+        private static string? TakeMappedNewPath(IntPtr handle)
+        {
+            if (handle == IntPtr.Zero) return null;
+            try
+            {
+                int count = Marshal.ReadInt32(handle);
+                if (count <= 0) return null;
+                IntPtr array = Marshal.ReadIntPtr(handle, IntPtr.Size);
+                if (array == IntPtr.Zero) return null;
+                // SHNAMEMAPPING: pszOldPath, pszNewPath, cchOldPath, cchNewPath
+                IntPtr newPath = Marshal.ReadIntPtr(array, IntPtr.Size);
+                return newPath == IntPtr.Zero ? null : Marshal.PtrToStringUni(newPath);
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                try { SHFreeNameMappings(handle); }
+                catch { /* 映射句柄已经不可用时，别让删除本身失败 */ }
             }
         }
     }

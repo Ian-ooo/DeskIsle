@@ -1107,6 +1107,7 @@ struct PortalView: View {
 
             // 【第 4 组】：剪贴板
             Button("拷贝") { AppDelegate.shared?.copyToClipboard([e.path]) }
+            Button("复制路径") { AppDelegate.shared?.copyPathsAsText([e.path]) }
             Button("剪切") { AppDelegate.shared?.cutToClipboard([e.path]) }
         }
     }
@@ -1158,6 +1159,7 @@ struct PortalView: View {
 
             // 【第 4 组】：剪贴板
             Button("拷贝（\(n) 项）") { AppDelegate.shared?.copyToClipboard(paths) }
+            Button("复制路径（\(n) 项）") { AppDelegate.shared?.copyPathsAsText(paths) }
             Button("剪切（\(n) 项）") { AppDelegate.shared?.cutToClipboard(paths) }
         }
     }

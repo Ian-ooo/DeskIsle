@@ -450,6 +450,20 @@ extension AppDelegate {
         reportClipboard("已复制", count: paths.count, icon: "doc.on.doc")
     }
 
+    /// 把路径写成**纯文本**放到系统剪贴板，供终端、便签、浏览器地址栏粘贴。
+    ///
+    /// 多项用换行隔开。刻意不碰 `FileClipboard`：那一份记的是「拷贝 / 剪切文件」，
+    /// 复制路径不该把上一次的文件剪切清掉，也不该让分区里的 ⌘V 把路径当文件贴进来。
+    func copyPathsAsText(_ paths: [String]) {
+        let lines = paths.filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(lines.joined(separator: "\n"), forType: .string)
+        let detail = lines.count == 1 ? lines[0] : "\(lines.count) 个路径"
+        Toast.shared.show("已复制路径", detail: detail, icon: "link")
+    }
+
     func cutToClipboard(_ paths: [String]) {
         FileClipboard.shared.cut(paths)
         reportClipboard("已剪切", count: paths.count, icon: "scissors")

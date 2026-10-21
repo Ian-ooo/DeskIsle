@@ -33,7 +33,7 @@ namespace DeskIsle.Services
         Copy,
         Cut,
         Paste,
-        /// <summary>撤销上一次文件操作（Ctrl+Z / ⌘Z）。执行层目前只在 mac 端落地。</summary>
+        /// <summary>撤销上一次文件操作（Ctrl+Z / ⌘Z）。mac 与 Windows 都执行；撤销本身不再入栈。</summary>
         Undo
     }
 

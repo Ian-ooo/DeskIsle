@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 using DeskIsle.Models;
+using DeskIsle.Views;
 
 namespace DeskIsle.Controls
 {
