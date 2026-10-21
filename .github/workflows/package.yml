@@ -1,0 +1,58 @@
+name: 打包 macOS 与 Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS app
+    runs-on: macos-latest
+    env:
+      # 通用二进制：Apple 芯片与 Intel 都能打开。
+      DESKISLE_TRIPLES: arm64-apple-macosx13.0 x86_64-apple-macosx13.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 测试并打包
+        working-directory: mac
+        run: bash build-app.sh
+
+      - name: 压缩 .app
+        working-directory: mac
+        # ditto 保留签名和资源叉；普通 zip 会把 .app 签坏。
+        run: ditto -c -k --keepParent dist/DeskIsle.app DeskIsle-macos.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskIsle-macos
+          path: mac/DeskIsle-macos.zip
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: 测试
+        run: dotnet test windows/tests/DeskIsle.Tests/DeskIsle.Tests.csproj -c Release --nologo
+
+      - name: 发布
+        # 与 windows/build.bat 相同：依赖目标机器上的 .NET 8 Desktop Runtime。
+        run: dotnet publish windows/DeskIsle/DeskIsle.csproj -c Release -r win-x64 --self-contained false -o windows/dist/DeskIsle
+
+      - name: 压缩
+        shell: pwsh
+        run: Compress-Archive -Path windows/dist/DeskIsle -DestinationPath DeskIsle-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskIsle-windows-x64
+          path: DeskIsle-windows-x64.zip
+          if-no-files-found: error

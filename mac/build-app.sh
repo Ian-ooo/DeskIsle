@@ -27,10 +27,35 @@ VERSION="0.1.0"
 echo "==> 1/5 运行测试（排版基准回归）"
 # 排版核心（Layout / PartitionMetrics / LayoutEngine）的断言。
 # 失败说明改动破坏了基准，先修测试再打包。
-swift test --disable-sandbox 2>&1 | tail -3
+# CI 保留完整输出，方便在 Actions 日志里定位失败；本地只留最后几行。
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    swift test --disable-sandbox
+else
+    swift test --disable-sandbox 2>&1 | tail -3
+fi
 
 echo "==> 2/5 编译 release 版本"
-swift build -c release --disable-sandbox
+# 可选：DESKISLE_TRIPLES="arm64-apple-macosx13.0 x86_64-apple-macosx13.0"
+# 多个 triple 时用 lipo 合成通用二进制，CI 靠这个同时覆盖 Apple 芯片和 Intel。
+PACKAGE_BIN="${BUILD_DIR}/${APP_NAME}"
+if [ -n "${DESKISLE_TRIPLES:-}" ]; then
+    bins=()
+    for triple in ${DESKISLE_TRIPLES}; do
+        echo "    triple ${triple}"
+        swift build -c release --disable-sandbox --triple "${triple}"
+        bin_dir=$(swift build -c release --disable-sandbox --triple "${triple}" --show-bin-path)
+        bins+=("${bin_dir}/${APP_NAME}")
+    done
+    if [ "${#bins[@]}" -eq 1 ]; then
+        PACKAGE_BIN="${bins[0]}"
+    else
+        mkdir -p "${BUILD_DIR}"
+        PACKAGE_BIN="${BUILD_DIR}/${APP_NAME}.universal"
+        lipo -create "${bins[@]}" -output "${PACKAGE_BIN}"
+    fi
+else
+    swift build -c release --disable-sandbox
+fi
 
 echo "==> 3/5 清理并创建 .app 目录结构"
 rm -rf "${APP_DIR}"
@@ -39,7 +64,7 @@ mkdir -p "${APP_DIR}/Contents/Resources/zh_CN.lproj"
 mkdir -p "${APP_DIR}/Contents/Resources/en.lproj"
 
 echo "==> 4/5 复制二进制与资源 + 生成 Info.plist"
-cp "${BUILD_DIR}/${APP_NAME}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
+cp "${PACKAGE_BIN}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
 # 复制应用图标
 if [ -f "Resources/AppIcon.icns" ]; then
