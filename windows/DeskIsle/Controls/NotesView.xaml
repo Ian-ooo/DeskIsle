@@ -14,7 +14,7 @@
         <Border Grid.Row="0" Background="{StaticResource SubtleFillBrush}" CornerRadius="4" BorderBrush="#12FFFFFF" BorderThickness="1">
             <Grid>
                 <TextBlock x:Name="PlaceholderText"
-                           Text="记点什么…"
+                           Text="写点什么"
                            Foreground="#55FFFFFF"
                            FontSize="12"
                            FontFamily="{StaticResource FluentFontFamily}"
@@ -33,6 +33,8 @@
                          VerticalScrollBarVisibility="Auto" 
                          Padding="8" 
                          TextChanged="NotesTextBox_TextChanged"
+                         GotKeyboardFocus="NotesTextBox_GotKeyboardFocus"
+                         LostKeyboardFocus="NotesTextBox_LostKeyboardFocus"
                          PreviewMouseLeftButtonDown="NotesTextBox_PreviewMouseLeftButtonDown"
                          PreviewMouseLeftButtonUp="NotesTextBox_PreviewMouseLeftButtonUp"
                          ContextMenuOpening="NotesTextBox_ContextMenuOpening"/>

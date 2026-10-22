@@ -1917,6 +1917,8 @@ struct NotesView: View {
     let id: String
     @State private var text: String
     @State private var isTargeted = false
+    /// 鼠标点进便签后就不画占位。空白、且没有点在里面时才出现。
+    @State private var cursorInside = false
 
     init(id: String, initialText: String) {
         self.id = id
@@ -1931,15 +1933,15 @@ struct NotesView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .topLeading) {
-                if text.isEmpty {
-                    Text("记点什么…")
+                if text.isEmpty && !cursorInside {
+                    Text("写点什么")
                         .font(.system(size: 13))
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 8)
                         .padding(.top, 4)
                         .allowsHitTesting(false)
                 }
-                NotesTextEditor(text: $text) {
+                NotesTextEditor(text: $text, onCursorInsideChange: { cursorInside = $0 }) {
                     AppDelegate.shared?.updateNote(id, text)
                 }
             }
@@ -2061,6 +2063,7 @@ struct NotesView: View {
 /// 支持 URL 与 IP 智能高亮识别、⌘-单击直达与右键快捷操作的原生便签文本编辑器
 private struct NotesTextEditor: NSViewRepresentable {
     @Binding var text: String
+    var onCursorInsideChange: (Bool) -> Void
     var onCommit: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -2076,6 +2079,7 @@ private struct NotesTextEditor: NSViewRepresentable {
         scrollView.autohidesScrollers = true
 
         let textView = NotesTextView()
+        textView.onCursorInsideChange = onCursorInsideChange
         textView.delegate = context.coordinator
         textView.font = NSFont.systemFont(ofSize: 13)
         textView.textColor = NSColor.labelColor
@@ -2086,8 +2090,10 @@ private struct NotesTextEditor: NSViewRepresentable {
         textView.isAutomaticLinkDetectionEnabled = true
         textView.isSelectable = true
         textView.isEditable = true
-        // 分区底是深色的，系统默认插入点偏黑，点进去像没有光标。
-        textView.insertionPointColor = .labelColor
+        // 与待办行内编辑的 TextField 同一套系统插入符（颜色和闪烁都交给系统）。
+        if #available(macOS 14.0, *) {
+            textView.insertionPointColor = .textInsertionPointColor
+        }
         textView.textContainerInset = NSSize(width: 4, height: 4)
         textView.autoresizingMask = [.width]
         textView.isHorizontallyResizable = false
@@ -2105,7 +2111,8 @@ private struct NotesTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView else { return }
+        guard let textView = scrollView.documentView as? NotesTextView else { return }
+        textView.onCursorInsideChange = onCursorInsideChange
         if !context.coordinator.isUpdating && textView.string != text {
             context.coordinator.updateText(text)
         }
@@ -2188,11 +2195,77 @@ private struct NotesTextEditor: NSViewRepresentable {
 }
 
 private final class NotesTextView: NSTextView {
+    var onCursorInsideChange: ((Bool) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+        guard let window else { return }
+        NotificationCenter.default.addObserver(self, selector: #selector(windowKeyChanged),
+                                               name: NSWindow.didBecomeKeyNotification, object: window)
+        NotificationCenter.default.addObserver(self, selector: #selector(windowKeyChanged),
+                                               name: NSWindow.didResignKeyNotification, object: window)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    /// 刚点下去的时刻。从分区外点进来时 makeKey 会被回滚，紧接着的失焦通知不能把占位文案又画出来。
+    private var clickedAt: TimeInterval = 0
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { markClickedIn() }
+        return ok
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if ok {
+            clickedAt = 0
+            onCursorInsideChange?(false)
+        }
+        return ok
+    }
+
     override func mouseDown(with event: NSEvent) {
-        // 分区是 nonactivatingPanel，不先变成 key window，插入点不会闪。
+        // 一点击就收起「写点什么」，不等窗口变成 key。
+        // 分区是 nonactivatingPanel，从外面点进来时 makeKey 常常被回滚，
+        // 插入符要等窗口真正成为 key 才开始闪。
+        markClickedIn()
         window?.makeKey()
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
+        DispatchQueue.main.async { [weak self] in
+            self?.restartCaretBlink()
+        }
+    }
+
+    @objc private func windowKeyChanged() {
+        if window?.isKeyWindow == true, window?.firstResponder === self {
+            markClickedIn()
+        } else if !justClicked() {
+            clickedAt = 0
+            onCursorInsideChange?(false)
+        }
+        restartCaretBlink()
+    }
+
+    /// 窗口真正成为 key、且焦点还在便签里时，把插入符的闪烁计时拉起来。
+    private func restartCaretBlink() {
+        guard window?.isKeyWindow == true, window?.firstResponder === self else { return }
+        updateInsertionPointStateAndRestartTimer(true)
+    }
+
+    private func markClickedIn() {
+        clickedAt = Date.timeIntervalSinceReferenceDate
+        onCursorInsideChange?(true)
+    }
+
+    private func justClicked() -> Bool {
+        clickedAt > 0 && Date.timeIntervalSinceReferenceDate - clickedAt < 0.5
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -2584,6 +2657,29 @@ struct TodoView: View {
     }
 }
 
+/// 把点击位置换成待办文字里的插入点（UTF-16 下标）。点在字的右半边算「这个字后面」。
+private enum TodoCaretIndex {
+    static func index(in text: String, at point: CGPoint, width: CGFloat) -> Int {
+        let ns = text as NSString
+        if ns.length == 0 { return 0 }
+        let font = NSFont.systemFont(ofSize: 13)
+        let storage = NSTextStorage(string: text, attributes: [.font: font])
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: max(width, 1), height: 10_000))
+        container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = 2
+        container.lineBreakMode = .byWordWrapping
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        _ = manager.glyphRange(for: container)
+        var fraction: CGFloat = 0
+        let idx = manager.characterIndex(
+            for: point, in: container, fractionOfDistanceBetweenInsertionPoints: &fraction)
+        if idx >= ns.length { return ns.length }
+        return fraction > 0.5 ? min(ns.length, idx + 1) : idx
+    }
+}
+
 private struct TodoRow: View {
     let partitionId: String
     let todo: TodoVM
@@ -2591,6 +2687,8 @@ private struct TodoRow: View {
     @State private var isEditing = false
     @State private var editText = ""
     @State private var isDropTargeted = false
+    @State private var textWidth: CGFloat = 0
+    @State private var pendingCaret: Int?
     @FocusState private var editFocused: Bool
 
     private var priorityColor: Color {
@@ -2615,6 +2713,7 @@ private struct TodoRow: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .focused($editFocused)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .onSubmit { commitEdit() }
                     .onExitCommand { cancelEdit() }
             } else {
@@ -2624,10 +2723,23 @@ private struct TodoRow: View {
                     .foregroundStyle(todo.completed ? Color.secondary : Color.primary)
                     .lineLimit(2)
                     .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { startEdit() }
-            }
+                    .background(GeometryReader { geo in
+                        Color.clear
+                            .onAppear { textWidth = geo.size.width }
+                            .onChange(of: geo.size.width) { textWidth = $0 }
+                    })
+                    .simultaneousGesture(clickToEdit { point in
+                        let width = textWidth > 1 ? textWidth : 10_000
+                        startEdit(caretAt: TodoCaretIndex.index(in: todo.text, at: point, width: width))
+                    })
 
-            Spacer(minLength: 0)
+                // 文字右侧的空白是这一行的尾部。至少留 16pt，写满时也点得到。
+                Spacer(minLength: 16)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(clickToEdit { _ in
+                        startEdit(caretAt: (todo.text as NSString).length)
+                    })
+            }
 
             // 优先级小圆点常驻展示（可直接点击切换优先级）
             Button { AppDelegate.shared?.cycleTodoPriority(partitionId, todo.id) } label: {
@@ -2678,7 +2790,7 @@ private struct TodoRow: View {
         }
         .contextMenu {
             Button(isEditing ? "完成编辑" : "编辑待办") {
-                if isEditing { commitEdit() } else { startEdit() }
+                if isEditing { commitEdit() } else { startEdit(caretAt: (todo.text as NSString).length) }
             }
             Button("切换完成状态") { AppDelegate.shared?.toggleTodo(partitionId, todo.id) }
             Menu("设置优先级") {
@@ -2693,12 +2805,57 @@ private struct TodoRow: View {
         }
     }
 
-    private func startEdit() {
+    /// 单击（几乎没有位移）才进编辑，拖动仍留给这一行的排序。
+    private func clickToEdit(_ action: @escaping (CGPoint) -> Void) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onEnded { value in
+                let dx = value.translation.width
+                let dy = value.translation.height
+                guard dx * dx + dy * dy < 16 else { return }
+                action(value.startLocation)
+            }
+    }
+
+    private func startEdit(caretAt index: Int) {
+        let length = (todo.text as NSString).length
         AppDelegate.shared?.activatePartition(partitionId)
         editText = todo.text
+        pendingCaret = min(max(0, index), length)
         isEditing = true
         DispatchQueue.main.async {
             editFocused = true
+            // 从分区外点进来时，窗口要下一拍才真正成为 key，field editor 也才挂上。
+            applyPendingCaret(attempt: 0)
+        }
+    }
+
+    /// 把插入符放到点击的那个位置并开始闪。输入框或窗口还没就绪就再等一拍。
+    private func applyPendingCaret(attempt: Int) {
+        guard let index = pendingCaret, attempt < 8 else { return }
+        guard let panel = AppDelegate.shared?.panel(for: partitionId) else {
+            DispatchQueue.main.async { applyPendingCaret(attempt: attempt + 1) }
+            return
+        }
+        let editor: NSTextView?
+        if let tv = panel.firstResponder as? NSTextView {
+            editor = tv
+        } else if let field = panel.firstResponder as? NSTextField {
+            editor = panel.fieldEditor(false, for: field) as? NSTextView
+        } else {
+            editor = nil
+        }
+        guard let editor, panel.isKeyWindow else {
+            DispatchQueue.main.async { applyPendingCaret(attempt: attempt + 1) }
+            return
+        }
+        let length = (editor.string as NSString).length
+        editor.setSelectedRange(NSRange(location: min(index, length), length: 0))
+        editor.updateInsertionPointStateAndRestartTimer(true)
+        if attempt < 3 {
+            // 聚焦后系统有时会把整段重新选中，多压两拍把插入符留在点击处。
+            DispatchQueue.main.async { applyPendingCaret(attempt: attempt + 1) }
+        } else {
+            pendingCaret = nil
         }
     }
 

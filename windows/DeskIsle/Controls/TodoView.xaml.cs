@@ -1,11 +1,14 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using DeskIsle.Models;
+using DeskIsle.Views;
 
 namespace DeskIsle.Controls
 {
@@ -166,25 +169,90 @@ namespace DeskIsle.Controls
             }
         }
 
-        private void DisplayText_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        private void DisplayText_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
-            if (e.ClickCount == 2 && sender is TextBlock tb && tb.Parent is Grid grid)
-            {
-                StartInlineEdit(tb, grid);
-                e.Handled = true;
-            }
+            if (_todoDragMoved || sender is not TextBlock tb || tb.Parent is not Grid grid) return;
+            int index = CaretIndexAt(tb.Text ?? string.Empty, e.GetPosition(tb).X, tb);
+            StartInlineEdit(tb, grid, index);
+            e.Handled = true;
         }
 
-        private void StartInlineEdit(TextBlock tb, Grid grid)
+        /// <summary>点在文字右边的空白（这一行的尾部）时，光标直接放到末尾。</summary>
+        private void TodoTextColumn_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_todoDragMoved || e.ClickCount != 1 || sender is not Grid grid) return;
+            var tb = grid.Children.OfType<TextBlock>().FirstOrDefault(t => t.Name == "DisplayText");
+            if (tb == null || tb.Visibility != Visibility.Visible) return;
+            double textWidth = tb.ActualWidth;
+            if (textWidth > 0 && e.GetPosition(grid).X <= textWidth + 2) return;
+            StartInlineEdit(tb, grid, (tb.Text ?? string.Empty).Length);
+            e.Handled = true;
+        }
+
+        private void StartInlineEdit(TextBlock tb, Grid grid, int caretIndex)
         {
             if (grid.Children.OfType<TextBox>().FirstOrDefault() is TextBox editBox && tb.DataContext is TodoItem item)
             {
                 tb.Visibility = Visibility.Collapsed;
                 editBox.Visibility = Visibility.Visible;
                 editBox.Text = item.Text;
+                int index = Math.Clamp(caretIndex, 0, editBox.Text.Length);
+                if (Window.GetWindow(editBox) is PartitionWindow partition)
+                    partition.ActivateAsNormalWindow();
                 editBox.Focus();
-                editBox.SelectAll();
+                Keyboard.Focus(editBox);
+                ApplyPendingCaret(editBox, index, 0);
             }
+        }
+
+        /// <summary>
+        /// 把插入点留在点击处并开始闪。窗口还没激活、或聚焦后又把整段选中时，再压几拍。
+        /// </summary>
+        private static void ApplyPendingCaret(TextBox editBox, int index, int attempt)
+        {
+            if (attempt >= 8 || editBox.Visibility != Visibility.Visible) return;
+            var window = Window.GetWindow(editBox);
+            bool ready = window?.IsActive == true && editBox.IsKeyboardFocused;
+            if (ready)
+                PlaceCaret(editBox, index);
+            if (!ready || attempt < 3)
+            {
+                editBox.Dispatcher.BeginInvoke(
+                    new Action(() => ApplyPendingCaret(editBox, index, attempt + 1)),
+                    DispatcherPriority.Input);
+            }
+        }
+
+        private static void PlaceCaret(TextBox editBox, int index)
+        {
+            int at = Math.Clamp(index, 0, editBox.Text.Length);
+            editBox.SelectionStart = at;
+            editBox.SelectionLength = 0;
+        }
+
+        /// <summary>点击落在第几个字上。点在字的右半边时，插入点算在这个字后面。</summary>
+        private static int CaretIndexAt(string text, double x, TextBlock tb)
+        {
+            if (string.IsNullOrEmpty(text) || x <= 0) return 0;
+            double dpi = VisualTreeHelper.GetDpi(tb).PixelsPerDip;
+            var typeface = new Typeface(tb.FontFamily, tb.FontStyle, tb.FontWeight, tb.FontStretch);
+            double prev = 0;
+            for (int i = 1; i <= text.Length; i++)
+            {
+                var formatted = new FormattedText(
+                    text.Substring(0, i),
+                    CultureInfo.CurrentUICulture,
+                    FlowDirection.LeftToRight,
+                    typeface,
+                    tb.FontSize,
+                    Brushes.Black,
+                    dpi);
+                double width = formatted.WidthIncludingTrailingWhitespace;
+                if (x <= width)
+                    return x - prev > (width - prev) / 2 ? i : i - 1;
+                prev = width;
+            }
+            return text.Length;
         }
 
         private void EditBox_KeyDown(object sender, KeyEventArgs e)
@@ -282,7 +350,7 @@ namespace DeskIsle.Controls
                     var grid = textBlock?.Parent as Grid;
                     if (textBlock != null && grid != null)
                     {
-                        StartInlineEdit(textBlock, grid);
+                        StartInlineEdit(textBlock, grid, (item.Text ?? string.Empty).Length);
                     }
                 }
             }
@@ -302,9 +370,11 @@ namespace DeskIsle.Controls
         }
 
         private Point _dragStartPoint;
+        private bool _todoDragMoved;
 
         private void ItemBorder_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
+            _todoDragMoved = false;
             // 如果点在复选框、文本编辑框、删除按钮上，不触发拖拽
             if (e.OriginalSource is DependencyObject dep)
             {
@@ -327,6 +397,7 @@ namespace DeskIsle.Controls
                 if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
                     Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
                 {
+                    _todoDragMoved = true;
                     var data = new DataObject("TodoItem", item.Id);
                     DragDrop.DoDragDrop(border, data, DragDropEffects.Move);
                 }

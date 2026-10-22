@@ -43,10 +43,13 @@
                     <CheckBox Grid.Column="0" IsChecked="{Binding Completed}" VerticalAlignment="Center" Margin="0,0,6,0" Click="CheckBox_Click"/>
 
                     <!-- Todo Text Display & Edit -->
-                    <Grid Grid.Column="1" VerticalAlignment="Center">
-                        <TextBlock x:Name="DisplayText" Text="{Binding Text}" Foreground="#E0E0E0" FontSize="12" 
-                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" 
-                                   MouseLeftButtonDown="DisplayText_MouseLeftButtonDown" ToolTip="双击编辑待办">
+                    <Grid Grid.Column="1" VerticalAlignment="Center" Background="Transparent"
+                          MouseLeftButtonUp="TodoTextColumn_MouseLeftButtonUp">
+                        <TextBlock x:Name="DisplayText" Text="{Binding Text}" Foreground="#E0E0E0" FontSize="12"
+                                   HorizontalAlignment="Left"
+                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                   Margin="0,0,16,0"
+                                   MouseLeftButtonUp="DisplayText_MouseLeftButtonUp" ToolTip="点击编辑待办">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Style.Triggers>

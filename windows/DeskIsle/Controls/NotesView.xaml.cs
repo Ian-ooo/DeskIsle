@@ -16,6 +16,11 @@ namespace DeskIsle.Controls
         private PartitionModel? _partition;
         private Action? _onDataChanged;
         private DispatcherTimer? _debounceTimer;
+        /// <summary>这次点击已经要求收起占位，焦点来回抖一下时不要把它画回来。</summary>
+        private bool _clickHidesPlaceholder;
+        /// <summary>刚点下去的时刻。窗口激活被回滚时，紧接着的失焦不能把提示又画出来。</summary>
+        private DateTime _clickedAt;
+        private Window? _host;
 
         private static readonly Regex UrlRegex = new Regex(@"https?://[^\s<>""']+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex IpRegex = new Regex(@"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]{1,5})?(?:/[^\s<>""']*)?\b", RegexOptions.Compiled);
@@ -23,6 +28,43 @@ namespace DeskIsle.Controls
         public NotesView()
         {
             InitializeComponent();
+            Loaded += OnLoaded;
+            Unloaded += OnUnloaded;
+        }
+
+        private void OnLoaded(object sender, RoutedEventArgs e)
+        {
+            DetachHost();
+            _host = Window.GetWindow(this);
+            if (_host == null) return;
+            _host.Activated += Host_Activated;
+            _host.Deactivated += Host_Deactivated;
+        }
+
+        private void OnUnloaded(object sender, RoutedEventArgs e) => DetachHost();
+
+        private void DetachHost()
+        {
+            if (_host == null) return;
+            _host.Activated -= Host_Activated;
+            _host.Deactivated -= Host_Deactivated;
+            _host = null;
+        }
+
+        private void Host_Activated(object? sender, EventArgs e)
+        {
+            if (!_clickHidesPlaceholder) return;
+            if (!NotesTextBox.IsKeyboardFocused && !NotesTextBox.IsMouseOver) return;
+            ApplyPlaceholder(cursorInside: true);
+            NotesTextBox.Focus();
+            Keyboard.Focus(NotesTextBox);
+        }
+
+        private void Host_Deactivated(object? sender, EventArgs e)
+        {
+            if (JustClicked()) return;
+            _clickHidesPlaceholder = false;
+            ApplyPlaceholder(cursorInside: false);
         }
 
         public void BindData(PartitionModel partition, Action onDataChanged)
@@ -52,20 +94,49 @@ namespace DeskIsle.Controls
 
         private void UpdateStats()
         {
-            string text = NotesTextBox.Text;
-            PlaceholderText.Visibility = string.IsNullOrEmpty(text)
+            ApplyPlaceholder(NotesTextBox.IsKeyboardFocused || _clickHidesPlaceholder);
+            int lines = string.IsNullOrEmpty(NotesTextBox.Text) ? 0 : NotesTextBox.Text.Split('\n').Length;
+            StatsText.Text = $"{NotesTextBox.Text.Length} 字符 · {lines} 行";
+        }
+
+        /// <summary>空白、且没有点在便签里时才提示。鼠标一点下去就收起。</summary>
+        private void ApplyPlaceholder(bool cursorInside)
+        {
+            PlaceholderText.Visibility = string.IsNullOrEmpty(NotesTextBox.Text) && !cursorInside
                 ? Visibility.Visible
                 : Visibility.Collapsed;
-            int lines = string.IsNullOrEmpty(text) ? 0 : text.Split('\n').Length;
-            StatsText.Text = $"{text.Length} 字符 · {lines} 行";
+        }
+
+        private void NotesTextBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+        {
+            ApplyPlaceholder(cursorInside: true);
+        }
+
+        private void NotesTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+        {
+            if (JustClicked() || (_clickHidesPlaceholder && NotesTextBox.IsMouseOver))
+            {
+                ApplyPlaceholder(cursorInside: true);
+                return;
+            }
+            _clickHidesPlaceholder = false;
+            ApplyPlaceholder(cursorInside: false);
         }
 
         private void NotesTextBox_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
-            // 分区窗口经常不是激活态，只靠点击不一定把插入点亮起来。
+            // 先收起提示，再要焦点。窗口还没激活时 GotKeyboardFocus 不一定来得及。
+            _clickHidesPlaceholder = true;
+            _clickedAt = DateTime.UtcNow;
+            ApplyPlaceholder(cursorInside: true);
+            if (Window.GetWindow(this) is PartitionWindow partition)
+                partition.ActivateAsNormalWindow();
             NotesTextBox.Focus();
             Keyboard.Focus(NotesTextBox);
         }
+
+        private bool JustClicked() =>
+            _clickHidesPlaceholder && (DateTime.UtcNow - _clickedAt).TotalSeconds < 0.5;
 
         private void NotesTextBox_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {

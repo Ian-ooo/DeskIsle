@@ -406,5 +406,60 @@ namespace DeskIsle.Tests
             var r = LayoutEngine.PositionKeepingGap(348, 414, 316, 314, 1512, 965, 100, above);
             Assert.Equal(414, r.Y, 3);
         }
+
+        /// <summary>
+        /// 100% 主屏：锚点与像素重合，工作区原样返回。
+        /// </summary>
+        [Fact]
+        public void TryMapRectFromAnchor_IdentityOn100PercentPrimary()
+        {
+            bool ok = LayoutEngine.TryMapRectFromAnchor(
+                16, 76, 316, 200,
+                16, 76, 332, 276,
+                0, 0, 1920, 1040,
+                out double x, out double y, out double w, out double h);
+            Assert.True(ok);
+            Assert.Equal(0, x, 3);
+            Assert.Equal(0, y, 3);
+            Assert.Equal(1920, w, 3);
+            Assert.Equal(1040, h, 3);
+        }
+
+        /// <summary>
+        /// 150% 主屏：像素工作区要缩回逻辑尺寸，原点仍在 (0,0)。
+        /// </summary>
+        [Fact]
+        public void TryMapRectFromAnchor_ScalesPrimaryAt150Percent()
+        {
+            bool ok = LayoutEngine.TryMapRectFromAnchor(
+                16, 76, 316, 200,
+                24, 114, 498, 414,
+                0, 0, 1920, 1560,
+                out double x, out double y, out double w, out double h);
+            Assert.True(ok);
+            Assert.Equal(0, x, 3);
+            Assert.Equal(0, y, 3);
+            Assert.Equal(1280, w, 3);
+            Assert.Equal(1040, h, 3);
+        }
+
+        /// <summary>
+        /// 副屏 150%、主屏 100%：工作区像素原点是 1920，不能再除以 1.5 变成 1280
+        /// （那会整块叠进主屏）。锚点换算后原点停在逻辑坐标 1920。
+        /// </summary>
+        [Fact]
+        public void TryMapRectFromAnchor_DoesNotScaleSecondaryOrigin()
+        {
+            bool ok = LayoutEngine.TryMapRectFromAnchor(
+                1936, 16, 316, 200,
+                1944, 24, 2418, 324,
+                1920, 0, 3840, 1080,
+                out double x, out double y, out double w, out double h);
+            Assert.True(ok);
+            Assert.Equal(1920, x, 3);
+            Assert.Equal(0, y, 3);
+            Assert.Equal(1280, w, 3);
+            Assert.Equal(720, h, 3);
+        }
     }
 }

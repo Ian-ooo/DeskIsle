@@ -128,7 +128,9 @@ namespace DeskIsle
                 try { workArea = MonitorService.WorkingAreaDIP(screen, win); }
                 catch { workArea = SystemParameters.WorkArea; }
 
-                double topMargin = 72.0; // 顶栏避让区
+                // 与对齐、与 Mac visualTopMargin 同一口径：有顶栏 76，没顶栏 24。
+                string sid = string.IsNullOrEmpty(win.ScreenId) ? model.ScreenId : win.ScreenId;
+                double topMargin = _config.ShowTopBarFor(sid) ? 76.0 : 24.0;
                 double w = model.Width > 0 ? model.Width : 260;
                 double h = model.IsCollapsed ? 44 : (model.Height > 0 ? model.Height : 300);
 
@@ -874,34 +876,70 @@ namespace DeskIsle
             // 记录**本屏**的对齐模式（多显示器下每屏独立；全局 alignMode 同步更新作为默认值）
             _config.SetAlignModeFor(sid, mode);
 
-            // 只取本屏分区（以窗口当前所在显示器归类）
-            var localWins = _partitionWindows.Where(w => w.ScreenId == sid).ToList();
-            if (localWins.Count == 0)
+            // 只取本屏分区（以窗口当前所在显示器归类）。
+            // 读序必须是配置顺序：按窗口枚举顺序会跟着 Z 序变，同一次对齐每次结果不同。
+            var onScreen = _partitionWindows.Where(w => w.ScreenId == sid).ToList();
+            if (onScreen.Count == 0)
             {
                 UpdateAllTopBars();
                 return;
             }
-            var localModels = localWins.Select(w => w.Model).ToList();
+            var byId = new Dictionary<string, PartitionWindow>();
+            foreach (var w in onScreen)
+            {
+                if (!byId.ContainsKey(w.Model.Id)) byId[w.Model.Id] = w;
+            }
+            var localModels = new List<Models.PartitionModel>();
+            foreach (var model in _config.Partitions)
+            {
+                if (!byId.TryGetValue(model.Id, out var win)) continue;
+                UseVisibleSize(win);
+                localModels.Add(win.Model);
+                byId.Remove(model.Id);
+            }
+            foreach (var win in byId.Values)
+            {
+                UseVisibleSize(win);
+                localModels.Add(win.Model);
+            }
+            // 先停掉上一次对齐留下的位移动画，否则锚点窗口的 Left 与像素矩形对不上，
+            // 工作区原点会偏一块屏。
+            foreach (var win in onScreen) win.CancelMoveAnimation();
 
             // 坐标基准 = **本屏工作区**（逻辑单位），不再是主屏的 SystemParameters.WorkArea
-            var workArea = MonitorService.WorkingAreaDIP(screen, localWins[0]);
+            var workArea = MonitorService.WorkingAreaDIP(screen, onScreen[0]);
             // 依据顶栏可见性计算视觉顶部边距：上方留白 16px + 顶栏 44px + 导航栏底部与顶层分区距离 16px = 76.0px
             // 顶部边距按**本屏**是否显示顶栏计算
             double topMargin = _config.ShowTopBarFor(sid) ? 76.0 : 24.0;
 
             var coords = LayoutEngine.CalculateLayout(
                 mode, localModels, workArea.Width, workArea.Height,
-                topMargin, 32.0, _config.MaxColumns, _config.TopHeightOrder);
+                topMargin, LayoutEngine.BottomInset, _config.MaxColumns, _config.TopHeightOrder);
 
-            foreach (var win in localWins)
+            foreach (var win in onScreen)
             {
                 if (coords.TryGetValue(win.Model.Id, out var pt))
                 {
-                    win.AnimateMoveTo(workArea.Left + pt.X, workArea.Top + pt.Y, 160);
+                    win.PlaceForAlign(
+                        Math.Round(workArea.Left + pt.X),
+                        Math.Round(workArea.Top + pt.Y));
                 }
             }
             _config.Save();
             UpdateAllTopBars();
+        }
+
+        /// <summary>
+        /// 排版按窗口此刻的真实宽高，不按模型里可能偏小的数字。
+        /// 模型偏小、窗口被最小高度撑大时，列间距按小尺寸算，窗口会叠在一起。
+        /// 折叠态只同步宽度：高度仍记展开尺寸，占位由折叠高度 44 负责。
+        /// </summary>
+        private static void UseVisibleSize(PartitionWindow win)
+        {
+            if (win.ActualWidth > 1)
+                win.Model.Width = win.ActualWidth;
+            if (!win.Model.IsCollapsed && win.ActualHeight > 1)
+                win.Model.Height = win.ActualHeight;
         }
 
         /// <summary>

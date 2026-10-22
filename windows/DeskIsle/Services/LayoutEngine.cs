@@ -26,6 +26,11 @@ namespace DeskIsle.Services
         public const double DefaultPartitionWidth = 280.0;
         public const double Margin = 16.0;
         public const double Gap = 16.0;
+        /// <summary>
+        /// 分区底部留白，与 mac <c>LayoutEngine.bottomInset</c> 同值。
+        /// 调用方传入的屏幕高度若已是工作区（任务栏已排除），这 40 是任务栏之上的额外留白。
+        /// </summary>
+        public const double BottomInset = 40.0;
 
         /// <summary>折叠分区在纵向布局里的占位高度（= 标题栏）</summary>
         public const double CollapsedHeight = 44.0;
@@ -636,6 +641,37 @@ namespace DeskIsle.Services
 
             foreach (var kv in placements) result[kv.Key] = kv.Value;
             return result;
+        }
+
+        /// <summary>
+        /// 用锚点窗口把一块设备像素矩形换到该窗口所用的逻辑坐标。
+        /// </summary>
+        /// <remarks>
+        /// 锚点的 (x, y, w, h) 与像素矩形是同一个窗口。比例取自它自己，
+        /// 所以副屏工作区的绝对原点不会被这块屏的 DPI 再缩一次。
+        /// 主屏在 (0,0) 且缩放 100% 时，结果与像素坐标相同。
+        /// </remarks>
+        public static bool TryMapRectFromAnchor(
+            double anchorX, double anchorY, double anchorW, double anchorH,
+            double anchorPxLeft, double anchorPxTop, double anchorPxRight, double anchorPxBottom,
+            double targetPxLeft, double targetPxTop, double targetPxRight, double targetPxBottom,
+            out double x, out double y, out double w, out double h)
+        {
+            x = y = w = h = 0;
+            if (double.IsNaN(anchorX) || double.IsNaN(anchorY)) return false;
+            double pw = anchorPxRight - anchorPxLeft;
+            double ph = anchorPxBottom - anchorPxTop;
+            double tw = targetPxRight - targetPxLeft;
+            double th = targetPxBottom - targetPxTop;
+            if (anchorW <= 1 || anchorH <= 1 || pw <= 1 || ph <= 1) return false;
+            double sx = pw / anchorW;
+            double sy = ph / anchorH;
+            if (sx <= 0 || sy <= 0 || double.IsInfinity(sx) || double.IsInfinity(sy)) return false;
+            x = anchorX + (targetPxLeft - anchorPxLeft) / sx;
+            y = anchorY + (targetPxTop - anchorPxTop) / sy;
+            w = tw / sx;
+            h = th / sy;
+            return w > 1 && h > 1 && !double.IsNaN(x) && !double.IsNaN(y);
         }
 
         /// <summary>

@@ -569,7 +569,7 @@ namespace DeskIsle.Views
             Model.IsCollapsed = false;   // 预设记的是「展开态下的尺寸」，恢复即展开
             Width = Model.Width;
             Height = Model.Height;
-            AnimateMoveTo(x, y, 180);
+            PlaceForAlign(x, y);
             RefreshChrome();
         }
 
@@ -1075,6 +1075,47 @@ namespace DeskIsle.Views
                 onCompleted?.Invoke();
             };
             BeginAnimation(OpacityProperty, anim);
+        }
+
+        /// <summary>
+        /// 对齐落位：直接写到目标坐标，并在这一拍里关掉磁吸。
+        ///
+        /// 以前用 Left/Top 动画。动画每帧都会进 <see cref="OnLocationChanged"/>，
+        /// 磁吸按「还在半路的邻居」把窗口吸走，三种对齐看起来都是叠在一起的。
+        /// 残留的动画时钟也会在落位之后把窗口再拉回旧位置。
+        /// </summary>
+        public void CancelMoveAnimation()
+        {
+            _programmaticMoveCount++;
+            try
+            {
+                BeginAnimation(LeftProperty, null);
+                BeginAnimation(TopProperty, null);
+            }
+            finally
+            {
+                if (_programmaticMoveCount > 0) _programmaticMoveCount--;
+            }
+        }
+
+        public void PlaceForAlign(double left, double top)
+        {
+            _programmaticMoveCount++;
+            try
+            {
+                BeginAnimation(LeftProperty, null);
+                BeginAnimation(TopProperty, null);
+                Left = left;
+                Top = top;
+                Model.X = left;
+                Model.Y = top;
+                var sid = MonitorService.DeviceIdOf(CurrentScreen);
+                if (Model.ScreenId != sid) Model.ScreenId = sid;
+            }
+            finally
+            {
+                if (_programmaticMoveCount > 0) _programmaticMoveCount--;
+            }
         }
 
         public void AnimateMoveTo(double targetLeft, double targetTop, int durationMs = 160)
